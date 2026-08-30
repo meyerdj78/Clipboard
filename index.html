@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Clipboard">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0d0d0d">
+<title>The Clipboard</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#0d0d0d;color:#efefef;font-family:'Barlow',sans-serif;-webkit-text-size-adjust:100%}
+  input,select,textarea,button{font-family:inherit}
+  ::-webkit-scrollbar{width:4px}
+  ::-webkit-scrollbar-thumb{background:#333;border-radius:2px}
+  #boot{min-height:100vh;display:flex;align-items:center;justify-content:center;color:#555;font-size:14px}
+</style>
+</head>
+<body>
+<div id="root"><div id="boot">Loading The Clipboard…</div></div>
+
+<script>
+window.__cbMounted = false;
+window.__cbFail = function (title, detail) {
+  var el = document.getElementById("root");
+  if (!el) return;
+  el.innerHTML =
+    '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px">' +
+    '<div style="max-width:460px;background:#1b1b1b;border:1px solid #e05252;border-radius:10px;padding:22px;font-family:sans-serif">' +
+    '<div style="color:#e05252;font-weight:700;font-size:16px;margin-bottom:10px">' + title + '</div>' +
+    '<div style="color:#aaa;font-size:13px;line-height:1.6">' + detail + '</div>' +
+    '<div style="color:#555;font-size:11px;margin-top:14px">React ' + (typeof React !== "undefined" ? "ok" : "missing") +
+    ' \u00b7 ReactDOM ' + (typeof ReactDOM !== "undefined" ? "ok" : "missing") +
+    ' \u00b7 Babel ' + (typeof Babel !== "undefined" ? "ok" : "missing") + '</div>' +
+    '</div></div>';
+};
+window.addEventListener("error", function (e) {
+  if (window.__cbMounted) return;
+  window.__cbFail("The Clipboard could not start", String((e && e.message) || e));
+});
+</script>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback } = React;
+
+const C={grass:"#2d6e2d",lime:"#7ec850",amber:"#f5c842",red:"#e05252",blue:"#4a8fd4",night:"#0d0d0d",card:"#1b1b1b",border:"#272727",muted:"#555",soft:"#aaa",text:"#efefef"};
+const LS_KEY="clipboard_v1",LS_SAVES="clipboard_saves_v1",MAX_SLOTS=8;
+const lsGet=(k)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):null;}catch{return null;}};
+const lsSet=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));return true;}catch{return false;}};
+const lsDel=(k)=>{try{localStorage.removeItem(k);}catch{}};
+const uid=()=>Math.random().toString(36).slice(2,8);
+const enc=(d)=>{try{return btoa(unescape(encodeURIComponent(JSON.stringify(d))));}catch{return "";}};
+const dec=(s)=>{try{return JSON.parse(decodeURIComponent(escape(atob(s))));}catch{return null;}};
+const today=()=>new Date().toISOString().slice(0,10);
+const fmtNow=()=>{const d=new Date();return d.toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})+" "+d.toLocaleDateString("en-GB",{day:"2-digit",month:"short"});};
+
+const fairScoreT=(p,maxT)=>{if(!p.attending||p.ill)return -1;return Math.round((maxT>0?1-(p.tournamentHalves??0)/maxT:1)*100);};
+const fairSortTeam=(players)=>{const avail=players.filter(p=>p.attending&&!p.ill);const maxT=Math.max(...avail.map(p=>p.tournamentHalves??0),1);return [...avail].sort((a,b)=>fairScoreT(b,maxT)-fairScoreT(a,maxT));};
+const fairScore=(p,maxS,maxR)=>{if(p.ill||!p.available)return -1;return Math.round(((maxS>0?1-p.seasonHalves/maxS:1)*0.6+(maxR>0?1-(p.recentHalves??0)/maxR:1)*0.4)*100);};
+const blankSeason=(name,pitchSize,playerNames)=>({id:uid(),name,pitchSize,players:playerNames.map(n=>({id:uid(),name:n,seasonHalves:0,recentHalves:0,available:true,ill:false,isGuest:false})),tournaments:[],activeTournament:null});
+const blankTournament=(name,date,location,pitchSize,numTeams,teamNames,squadPlayers)=>({id:uid(),name,date,location,pitchSize,numTeams,status:"roster",teams:Array.from({length:numTeams},(_,i)=>({id:uid(),name:teamNames[i]||`Team ${i+1}`,matches:[]})),roster:squadPlayers.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId:null,tournamentHalves:0}))});
+const migrateSeason=(s)=>{if(!s?.activeTournament)return s;const t=s.activeTournament;if(t.teams&&t.roster)return s;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
+
+const Lbl=({children,mt=12})=><div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:5,marginTop:mt,fontFamily:"'Barlow Condensed',sans-serif"}}>{children}</div>;
+const Inp=({style,...p})=><input style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:16,width:"100%",outline:"none",fontFamily:"inherit",boxSizing:"border-box",...style}} {...p}/>;
+const PBtn=({children,onClick,color,style,disabled})=><button onClick={onClick} disabled={!!disabled} style={{display:"block",width:"100%",padding:"11px",background:disabled?"#2a2a2a":(color||C.grass),border:"none",borderRadius:6,color:disabled?C.muted:"#fff",fontSize:15,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:1,cursor:disabled?"not-allowed":"pointer",marginTop:10,...style}}>{children}</button>;
+const Ghost=({children,onClick,style})=><button onClick={onClick} style={{padding:"7px 14px",background:"transparent",border:`1px solid ${C.border}`,borderRadius:5,color:C.soft,fontSize:13,cursor:"pointer",fontFamily:"inherit",...style}}>{children}</button>;
+const Pill=({children,active,onClick,col})=><button onClick={onClick} style={{background:active?(col||C.lime):"transparent",color:active?"#111":C.soft,border:`1px solid ${active?(col||C.lime):"#333"}`,padding:"5px 14px",borderRadius:20,fontSize:13,fontWeight:active?700:400,fontFamily:"'Barlow Condensed',sans-serif",cursor:"pointer"}}>{children}</button>;
+const Card=({children,style})=><div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:20,marginBottom:14,...style}}>{children}</div>;
+const SHead=({children})=><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:C.muted,textTransform:"uppercase",letterSpacing:2,marginBottom:10}}>{children}</div>;
+const ModalWrap=({children,title,onClose,wide})=>(
+  <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:400,display:"flex",alignItems:"center",justifyContent:"center",padding:16,overflowY:"auto"}}>
+    <div style={{background:"#1e1e1e",border:`1px solid ${C.border}`,borderRadius:12,padding:24,width:"100%",maxWidth:wide?720:500,maxHeight:"92vh",overflowY:"auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18}}>
+        <h3 style={{color:C.amber,fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,margin:0}}>{title}</h3>
+        {onClose&&<button onClick={onClose} style={{background:"none",border:"none",color:C.soft,fontSize:22,cursor:"pointer"}}>✕</button>}
+      </div>
+      {children}
+    </div>
+  </div>
+);
+const StatusBadge=({status})=>{const m={setup:["Setup","#2a2a2a",C.muted],first:["1st Half ▶",C.grass,"#fff"],halftime:["Half Time",C.amber,"#111"],second:["2nd Half ▶",C.grass,"#fff"],done:["Complete ✓","#1a3a1a",C.lime]};const[l,bg,col]=m[status]||["—","#2a2a2a",C.muted];return <span style={{background:bg,color:col,padding:"3px 10px",borderRadius:20,fontSize:11,fontWeight:700,letterSpacing:0.5,fontFamily:"'Barlow Condensed',sans-serif",whiteSpace:"nowrap"}}>{l}</span>;};
+const FBar=({score})=>{const col=score>66?C.lime:score>33?C.amber:C.red;return <div style={{display:"flex",alignItems:"center",gap:6}}><div style={{flex:1,height:5,background:"#252525",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",width:`${Math.max(score,0)}%`,background:col,borderRadius:3,transition:"width 0.3s"}}/></div><span style={{fontSize:11,color:col,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,width:28,textAlign:"right"}}>{score}</span></div>;};
+const Breadcrumb=({crumbs})=><div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:C.muted,marginBottom:16,flexWrap:"wrap"}}>{crumbs.map((c,i)=><span key={i} style={{display:"flex",alignItems:"center",gap:6}}>{i>0&&<span style={{color:"#444"}}>›</span>}{c.onClick?<button onClick={c.onClick} style={{background:"none",border:"none",color:C.soft,cursor:"pointer",fontSize:12,fontFamily:"inherit",padding:0}}>{c.label}</button>:<span style={{color:C.lime,fontWeight:600}}>{c.label}</span>}</span>)}</div>;
+
+function RosterScreen({tournament,seasonPlayers,onUpdate,onProceed,onBack}){
+  const{roster}=tournament;
+  const toggle=(playerId,field)=>{const nr=roster.map(r=>{if(r.playerId!==playerId)return r;if(field==="attending")return{...r,attending:!r.attending,ill:false};if(field==="ill")return{...r,ill:!r.ill,attending:r.ill};return r;});onUpdate({...tournament,roster:nr});};
+  const attending=roster.filter(r=>r.attending&&!r.ill).length;
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:"Season",onClick:onBack},{label:tournament.name},{label:"Squad Attendance"}]}/>
+      <Card>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:700,color:C.amber,marginBottom:4}}>{tournament.name}</div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:12}}>{tournament.date}{tournament.location?` · ${tournament.location}`:""}</div>
+        <div style={{fontSize:13,color:C.soft,marginBottom:14}}>Mark who's here today. Absent players are greyed out but not removed from the squad.</div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:14}}><span style={{color:C.lime,fontWeight:700}}>{attending} attending</span> · <span>{roster.length-attending} absent/ill</span></div>
+        {seasonPlayers.map(p=>{const r=roster.find(x=>x.playerId===p.id);if(!r)return null;const isHere=r.attending&&!r.ill;return(
+          <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 0",borderBottom:`1px solid ${C.border}`,gap:10,flexWrap:"wrap"}}>
+            <span style={{fontSize:14,fontWeight:500,opacity:isHere?1:0.4,flex:1}}>{p.name}{p.isGuest?" 👤":""}{r.ill?" 🤒":""}</span>
+            <div style={{display:"flex",gap:6}}>
+              <button onClick={()=>toggle(p.id,"attending")} style={{padding:"5px 12px",borderRadius:4,border:"none",fontSize:12,cursor:"pointer",fontWeight:600,background:isHere?C.grass:"#333",color:"#fff"}}>{isHere?"✓ Here":"Absent"}</button>
+              <button onClick={()=>toggle(p.id,"ill")} style={{padding:"5px 12px",borderRadius:4,border:`1px solid ${r.ill?C.red:"#444"}`,fontSize:12,cursor:"pointer",background:r.ill?C.red:"#2a2a2a",color:"#fff"}}>{r.ill?"🤒 Ill":"Mark Ill"}</button>
+            </div>
+          </div>
+        );})}
+        <PBtn style={{marginTop:16}} onClick={onProceed}>Assign to Teams →</PBtn>
+      </Card>
+    </>
+  );
+}
+
+function TeamAssignScreen({tournament,seasonPlayers,onUpdate,onProceed}){
+  const{roster,teams,pitchSize}=tournament;
+  const attending=roster.filter(r=>r.attending&&!r.ill);
+  const assign=(playerId,teamId)=>onUpdate({...tournament,roster:roster.map(r=>r.playerId===playerId?{...r,teamId}:r)});
+  const autoAssign=()=>{const unass=attending.filter(r=>!r.teamId).map(r=>r.playerId);const counts=teams.map(t=>({id:t.id,count:attending.filter(r=>r.teamId===t.id).length}));let nr=[...roster];unass.forEach(pid=>{counts.sort((a,b)=>a.count-b.count);nr=nr.map(r=>r.playerId===pid?{...r,teamId:counts[0].id}:r);counts[0].count++;});onUpdate({...tournament,roster:nr});};
+  const unassigned=attending.filter(r=>!r.teamId);
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:tournament.name},{label:"Team Assignment"}]}/>
+      <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap"}}>
+        <Ghost onClick={()=>onUpdate({...tournament,status:"roster"})}>← Back to Attendance</Ghost>
+        {unassigned.length>0&&<Ghost onClick={autoAssign}>⚡ Auto-assign evenly</Ghost>}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(teams.length,2)},1fr)`,gap:12,marginBottom:16}}>
+        {teams.map(team=>{const members=attending.filter(r=>r.teamId===team.id);const short=members.length<pitchSize-1&&members.length>0;const over=members.length>pitchSize+1;return(
+          <Card key={team.id} style={{marginBottom:0}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:C.amber,marginBottom:4}}>{team.name}</div>
+            <div style={{fontSize:11,color:(short||over)?C.amber:C.muted,marginBottom:10}}>{members.length} players · {pitchSize}-a-side{short?" ⚠ short":""}{over?" ⚠ over":""}</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:5,minHeight:32}}>
+              {members.map(r=>{const p=seasonPlayers.find(x=>x.id===r.playerId);return p?<div key={p.id} style={{display:"inline-flex",alignItems:"center",gap:4,background:"#1a3d1a",border:`1px solid ${C.grass}`,borderRadius:5,padding:"4px 8px",fontSize:12,color:C.lime}}>{p.name}<button onClick={()=>assign(p.id,null)} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:11,padding:"0 0 0 2px"}}>✕</button></div>:null;})}
+              {members.length===0&&<span style={{fontSize:12,color:"#444"}}>No players yet</span>}
+            </div>
+          </Card>
+        );})}
+      </div>
+      {unassigned.length>0&&(
+        <Card>
+          <div style={{fontSize:12,color:C.amber,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>⚠ Unassigned ({unassigned.length})</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {unassigned.map(r=>{const p=seasonPlayers.find(x=>x.id===r.playerId);return p?<div key={p.id} style={{background:"#252525",border:`1px solid ${C.border}`,borderRadius:6,padding:"6px 10px",fontSize:13}}><div style={{color:C.text,marginBottom:5}}>{p.name}</div><div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{teams.map(t=><button key={t.id} onClick={()=>assign(p.id,t.id)} style={{padding:"3px 8px",background:C.grass,border:"none",borderRadius:4,color:"#fff",fontSize:11,cursor:"pointer",fontWeight:600}}>→ {t.name}</button>)}</div></div>:null;})}
+          </div>
+        </Card>
+      )}
+      <PBtn disabled={unassigned.length>0} onClick={onProceed}>{unassigned.length>0?`Assign all players first (${unassigned.length} remaining)`:"Start Tournament →"}</PBtn>
+    </>
+  );
+}
+
+function SelectionEditor({half,initOn,initBench,initOut,pitchSize,players,onConfirm,onCancel}){
+  const[curOn,setCurOn]=useState([...initOn]);
+  const[curBench,setCurBench]=useState([...initBench]);
+  const[curOut,setCurOut]=useState([...initOut]);
+  const getP=id=>players.find(p=>p.id===id);
+  const pName=id=>getP(id)?.name??"?";
+  const pHalves=id=>getP(id)?.tournamentHalves??0;
+  const toOn=id=>{setCurBench(p=>p.filter(x=>x!==id));setCurOut(p=>p.filter(x=>x!==id));setCurOn(p=>p.includes(id)?p:[...p,id]);};
+  const toBench=id=>{setCurOn(p=>p.filter(x=>x!==id));setCurOut(p=>p.filter(x=>x!==id));setCurBench(p=>p.includes(id)?p:[...p,id]);};
+  const toOut=id=>{setCurOn(p=>p.filter(x=>x!==id));setCurBench(p=>p.filter(x=>x!==id));setCurOut(p=>p.includes(id)?p:[...p,id]);};
+  const over=curOn.length>pitchSize;
+  const Chip=({id,type})=>(
+    <div style={{display:"inline-flex",alignItems:"center",gap:4,background:type==="on"?"#1a3d1a":type==="bench"?"#252525":"#222",border:`1px solid ${type==="on"?C.grass:type==="bench"?"#333":"#383838"}`,borderRadius:6,padding:"5px 10px",fontSize:13,color:type==="on"?C.lime:type==="bench"?C.soft:C.muted}}>
+      <span>{pName(id)}</span><span style={{fontSize:10,opacity:0.6,marginLeft:2}}>({pHalves(id)} hlv)</span>
+      <div style={{display:"flex",gap:3,marginLeft:4}}>
+        {type!=="on"&&<button onClick={()=>toOn(id)} style={{background:"none",border:"none",color:C.lime,cursor:"pointer",fontSize:11,padding:"0 1px",fontWeight:700}}>P</button>}
+        {type!=="bench"&&<button onClick={()=>toBench(id)} style={{background:"none",border:"none",color:C.soft,cursor:"pointer",fontSize:11,padding:"0 1px",fontWeight:700}}>B</button>}
+        {type!=="out"&&<button onClick={()=>toOut(id)} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:11,padding:"0 1px"}}>✕</button>}
+      </div>
+    </div>
+  );
+  return(
+    <ModalWrap title={`Review ${half===1?"1st":"2nd"} Half Selection`} wide>
+      <p style={{fontSize:13,color:C.soft,marginBottom:16,lineHeight:1.6}}>Move players before confirming. <strong style={{color:C.lime}}>P</strong> = Pitch · <strong style={{color:C.soft}}>B</strong> = Bench · <strong style={{color:C.muted}}>✕</strong> = Not playing</p>
+      {curOn.length!==pitchSize&&<div style={{background:over?"#3a1010":"#2a2010",border:`1px solid ${over?C.red:C.amber}`,borderRadius:6,padding:"8px 12px",fontSize:13,color:over?"#ff9999":"#ffe099",marginBottom:14}}>{over?`⚠ ${curOn.length-pitchSize} too many on pitch`:`⚠ ${pitchSize-curOn.length} short — you can still confirm`}</div>}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:16}}>
+        <div><div style={{fontSize:12,color:C.lime,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>🟢 On Pitch ({curOn.length}/{pitchSize})</div><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{curOn.map(id=><Chip key={id} id={id} type="on"/>)}{curOn.length===0&&<span style={{fontSize:12,color:"#444"}}>None</span>}</div></div>
+        <div><div style={{fontSize:12,color:C.soft,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>⚪ Bench ({curBench.length})</div><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{curBench.map(id=><Chip key={id} id={id} type="bench"/>)}{curBench.length===0&&<span style={{fontSize:12,color:"#444"}}>None</span>}</div></div>
+      </div>
+      {curOut.length>0&&<div style={{marginBottom:16}}><div style={{fontSize:12,color:C.muted,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>⛔ Not Playing</div><div style={{display:"flex",flexWrap:"wrap",gap:5}}>{curOut.map(id=><Chip key={id} id={id} type="out"/>)}</div></div>}
+      <div style={{display:"flex",gap:10,marginTop:8}}>
+        <Ghost onClick={onCancel}>← Back</Ghost>
+        <PBtn style={{marginTop:0,flex:1}} disabled={over} onClick={()=>onConfirm({on:curOn,bench:curBench})}>{over?`Too many — move ${curOn.length-pitchSize} to bench`:`Confirm ${half===1?"1st":"2nd"} Half →`}</PBtn>
+      </div>
+    </ModalWrap>
+  );
+}
+
+function HalfPanel({half,match,players,pitchSize,patchMatch,completeHalf,recordChange,notify,onReview}){
+  const[chgModal,setChgModal]=useState(false);
+  const[off,setOff]=useState("");
+  const[on,setOn]=useState("");
+  const key=half===1?"firstHalf":"secondHalf";
+  const hd=match[key];
+  const locked=half===1?["halftime","done"].includes(match.status):match.status==="done";
+  const isActive=half===1?match.status==="first":["halftime","second"].includes(match.status);
+  const blocked=half===2&&match.status==="first";
+  const pName=id=>players.find(p=>p.id===id)?.name??"?";
+  const noSel=hd.on.length===0&&hd.bench.length===0;
+  const onPitch=hd.on.map(id=>players.find(p=>p.id===id)).filter(Boolean);
+  const onBench=hd.bench.map(id=>players.find(p=>p.id===id)).filter(Boolean);
+  const movePlayer=(pid,dir)=>{const h={on:[...hd.on],bench:[...hd.bench]};if(dir==="on"){h.bench=h.bench.filter(id=>id!==pid);if(!h.on.includes(pid))h.on.push(pid);}else{h.on=h.on.filter(id=>id!==pid);if(!h.bench.includes(pid))h.bench.push(pid);}patchMatch(match.id,{[key]:h});};
+  const warn=!noSel&&onPitch.length!==pitchSize;
+  if(blocked)return <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:16,opacity:0.3}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,color:C.amber}}>2nd Half</div><p style={{fontSize:12,color:C.muted,marginTop:8}}>Complete 1st half first</p></div>;
+  const ChipGroup=({label,plist,type})=>(
+    <div style={{marginBottom:10}}>
+      <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:5,fontFamily:"'Barlow Condensed',sans-serif"}}>{label}{type==="on"&&<span style={{color:onPitch.length===pitchSize?C.lime:C.amber,marginLeft:4}}>{onPitch.length}/{pitchSize}</span>}</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+        {plist.map(p=><div key={p.id} style={{display:"inline-flex",alignItems:"center",gap:3,background:type==="on"?"#1a3d1a":"#252525",border:`1px solid ${type==="on"?C.grass:"#333"}`,borderRadius:5,padding:"4px 8px",fontSize:12,color:type==="on"?C.lime:C.soft}}>{p.name}{!locked&&type==="on"&&<button style={{background:"none",border:"none",color:"#666",fontSize:10,cursor:"pointer",paddingLeft:2}} onClick={()=>movePlayer(p.id,"bench")}>▼</button>}{!locked&&type==="bench"&&<button style={{background:"none",border:"none",color:"#666",fontSize:10,cursor:"pointer",paddingLeft:2}} onClick={()=>movePlayer(p.id,"on")}>▲</button>}</div>)}
+        {plist.length===0&&<span style={{fontSize:12,color:"#444"}}>None</span>}
+      </div>
+    </div>
+  );
+  return(
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,color:C.amber}}>{half===1?"1st Half":"2nd Half"}</span>
+        {locked&&<span style={{fontSize:11,color:C.lime,fontWeight:700}}>✓ Locked</span>}
+      </div>
+      {noSel&&!locked&&<p style={{fontSize:12,color:C.muted,marginBottom:10}}>No selection yet.</p>}
+      {!noSel&&<><ChipGroup label="🟢 On Pitch" plist={onPitch} type="on"/><ChipGroup label="⚪ Bench" plist={onBench} type="bench"/></>}
+      {!locked&&<Ghost onClick={()=>onReview(half)} style={{marginTop:8,width:"100%",textAlign:"center"}}>{noSel?"✏ Build Selection":"✏ Edit Selection"}</Ghost>}
+      {isActive&&!locked&&!noSel&&!warn&&<PBtn onClick={()=>completeHalf(match.id,half)} style={{marginTop:8}}>Lock {half===1?"1st Half":"Match End"} ✓</PBtn>}
+      {isActive&&!locked&&!noSel&&warn&&<><div style={{background:"#2a2010",border:`1px solid ${C.amber}`,borderRadius:5,padding:"6px 10px",fontSize:12,color:"#ffe099",marginTop:8}}>⚠ {onPitch.length}/{pitchSize} on pitch</div><PBtn onClick={()=>completeHalf(match.id,half)} style={{marginTop:6}} color={C.amber}>Lock anyway ✓</PBtn></>}
+      {isActive&&!locked&&<Ghost onClick={()=>{setOff("");setOn("");setChgModal(true);}} style={{marginTop:8,width:"100%",textAlign:"center"}}>Record mid-half change</Ghost>}
+      {chgModal&&(
+        <ModalWrap title={`Change — ${half===1?"1st":"2nd"} Half`} onClose={()=>setChgModal(false)}>
+          <Lbl mt={0}>Coming OFF</Lbl>
+          <select value={off} onChange={e=>setOff(e.target.value)} style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:16,width:"100%",outline:"none"}}><option value="">Select…</option>{hd.on.map(id=><option key={id} value={id}>{pName(id)}</option>)}</select>
+          <Lbl>Coming ON</Lbl>
+          <select value={on} onChange={e=>setOn(e.target.value)} style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:16,width:"100%",outline:"none"}}><option value="">Select…</option>{hd.bench.map(id=><option key={id} value={id}>{pName(id)}</option>)}</select>
+          <div style={{display:"flex",gap:10,marginTop:16}}><Ghost onClick={()=>setChgModal(false)}>Cancel</Ghost><PBtn style={{marginTop:0,flex:1}} onClick={()=>{if(!off||!on){notify("Select both","err");return;}recordChange(match.id,half,off,on);setChgModal(false);setOff("");setOn("");}}>Confirm</PBtn></div>
+        </ModalWrap>
+      )}
+    </div>
+  );
+}
+
+function SelectionEditorWrapper({half,getDraft,pitchSize,players,onConfirm,onCancel}){
+  const d=getDraft(half);
+  return <SelectionEditor half={half} initOn={d.on} initBench={d.bench} initOut={d.out} pitchSize={pitchSize} players={players} onConfirm={sel=>onConfirm(half,sel)} onCancel={onCancel}/>;
+}
+
+function ScorePanel({match,players,patchMatch}){
+  const[scorer,setScorer]=useState("");
+  const score=match.score||{us:0,them:0,tries:[]};
+  const update=(patch)=>patchMatch(match.id,{score:{...score,...patch}});
+  const addTry=()=>{const tries=[...(score.tries||[]),{id:uid(),playerId:scorer||null,playerName:scorer?(players.find(p=>p.id===scorer)?.name||"Unknown"):"Unknown",at:new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})}];update({tries,us:(score.us||0)+1});setScorer("");};
+  const removeTry=(tid)=>update({tries:(score.tries||[]).filter(t=>t.id!==tid),us:Math.max(0,(score.us||0)-1)});
+  const tryTally={};(score.tries||[]).forEach(t=>{if(t.playerId)tryTally[t.playerId]=(tryTally[t.playerId]||0)+1;});
+  return(
+    <Card>
+      <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1.5,marginBottom:12,fontFamily:"'Barlow Condensed',sans-serif"}}>📊 Score</div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:20,marginBottom:16}}>
+        {[["Us",score.us||0,C.lime,"us"],[match.opposition||"Them",score.them||0,C.amber,"them"]].map(([lbl,val,col,k],i)=>(
+          <div key={i} style={{textAlign:"center"}}>
+            <div style={{fontSize:11,color:C.muted,marginBottom:4}}>{lbl}</div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <button onClick={()=>update({[k]:Math.max(0,val-1)})} style={{background:"#252525",border:`1px solid ${C.border}`,borderRadius:4,color:C.soft,fontSize:16,cursor:"pointer",width:28,height:28,display:"flex",alignItems:"center",justifyContent:"center"}}>−</button>
+              <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:36,fontWeight:900,color:col,minWidth:40,textAlign:"center"}}>{val}</span>
+              <button onClick={()=>update({[k]:val+1})} style={{background:"#252525",border:`1px solid ${C.border}`,borderRadius:4,color:C.soft,fontSize:16,cursor:"pointer",width:28,height:28,display:"flex",alignItems:"center",justifyContent:"center"}}>+</button>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:8,fontFamily:"'Barlow Condensed',sans-serif"}}>Record Try Scorer</div>
+      <div style={{display:"flex",gap:8,marginBottom:12}}>
+        <select value={scorer} onChange={e=>setScorer(e.target.value)} style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:16,flex:1,outline:"none"}}><option value="">Select player...</option>{players.map(p=><option key={p.id} value={p.id}>{p.name}{tryTally[p.id]?` (${tryTally[p.id]}✓)`:""}</option>)}</select>
+        <button onClick={addTry} style={{padding:"8px 14px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>+ Try</button>
+      </div>
+      {(score.tries||[]).length>0&&<div style={{display:"flex",flexWrap:"wrap",gap:5}}>{(score.tries||[]).map(t=><div key={t.id} style={{display:"inline-flex",alignItems:"center",gap:5,background:"#1a3d1a",border:`1px solid ${C.grass}`,borderRadius:5,padding:"3px 8px",fontSize:12,color:C.lime}}>🏉 {t.playerName} <span style={{color:C.muted,fontSize:10}}>{t.at}</span><button onClick={()=>removeTry(t.id)} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:11,padding:"0 0 0 2px"}}>✕</button></div>)}</div>}
+    </Card>
+  );
+}
+
+function MovePlayerModal({tournament,seasonPlayers,onUpdate,onClose}){
+  const{roster,teams}=tournament;
+  const attending=roster.filter(r=>r.attending&&!r.ill);
+  const move=(playerId,newTeamId)=>onUpdate({...tournament,roster:roster.map(r=>r.playerId===playerId?{...r,teamId:newTeamId}:r)});
+  return(
+    <ModalWrap title="Move Players Between Teams" onClose={onClose} wide>
+      <p style={{fontSize:13,color:C.soft,marginBottom:16,lineHeight:1.6}}>Reassign players. Their halves played this tournament travel with them.</p>
+      {teams.map(team=>{
+        const members=attending.filter(r=>r.teamId===team.id);
+        return(
+          <div key={team.id} style={{marginBottom:18}}>
+            <div style={{fontSize:13,color:C.amber,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>{team.name} ({members.length})</div>
+            {members.length===0&&<p style={{fontSize:12,color:C.muted}}>No players assigned</p>}
+            {members.map(r=>{const p=seasonPlayers.find(x=>x.id===r.playerId);if(!p)return null;return(
+              <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0",borderBottom:`1px solid ${C.border}`,flexWrap:"wrap"}}>
+                <span style={{flex:1,fontSize:13}}>{p.name} <span style={{color:C.muted,fontSize:11}}>({r.tournamentHalves??0} hlvs)</span></span>
+                <div style={{display:"flex",gap:6}}>{teams.filter(t=>t.id!==team.id).map(t=><button key={t.id} onClick={()=>move(p.id,t.id)} style={{padding:"4px 10px",background:C.blue,border:"none",borderRadius:4,color:"#fff",fontSize:12,cursor:"pointer",fontWeight:600}}>→ {t.name}</button>)}</div>
+              </div>
+            );})}
+          </div>
+        );
+      })}
+    </ModalWrap>
+  );
+}
+
+function MatchView({match,teamPlayers,pitchSize,patchMatch,autoPick,completeHalf,recordChange,notify,updateRosterPlayer,tournament,team,season,onBack,onNext,onPrev,matchIndex,totalMatches}){
+  const[boostIds,setBoostIds]=useState([]);
+  const[reviewing,setReviewing]=useState(null);
+  const[draft,setDraft]=useState(null);
+  const tb=id=>setBoostIds(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id]);
+  const doAutoPick=(half)=>{const r=autoPick(match.id,team.id,boostIds,half);if(r){setDraft(r);setReviewing(half);}};
+  const doAutoPickBoth=()=>{const r=autoPick(match.id,team.id,boostIds,"both");if(r){setDraft(r);setReviewing(1);}};
+  const getDraft=(half)=>{const key=half===1?"firstHalf":"secondHalf";const hd=(draft&&draft[key])?draft[key]:match[key];const assigned=[...hd.on,...hd.bench];return{on:hd.on,bench:hd.bench,out:teamPlayers.filter(p=>!assigned.includes(p.id)).map(p=>p.id)};};
+  const confirmSel=(half,{on,bench})=>{const key=half===1?"firstHalf":"secondHalf";const ns=half===1?"first":(match.status==="halftime"?"second":match.status);patchMatch(match.id,team.id,{[key]:{on,bench},status:ns});setReviewing(null);setDraft(null);notify(`${half===1?"1st":"2nd"} half confirmed ✓`);};
+  const doCompleteHalf=(mid,half)=>{completeHalf(mid,team.id,half);if(half===1){setTimeout(()=>{const r=autoPick(mid,team.id,boostIds,2);if(r){setDraft(r);setReviewing(2);}},80);}};
+  const canPickFirst=!["halftime","second","done"].includes(match.status);
+  const canPickSecond=["halftime","second"].includes(match.status);
+  const pn=id=>teamPlayers.find(p=>p.id===id)?.name??"?";
+  return(
+    <>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,gap:8}}>
+        <button onClick={onPrev} disabled={!onPrev} style={{padding:"7px 14px",background:"transparent",border:`1px solid ${onPrev?C.border:"#222"}`,borderRadius:5,color:onPrev?C.soft:"#333",fontSize:13,cursor:onPrev?"pointer":"not-allowed",fontFamily:"inherit"}}>← Prev</button>
+        <div style={{textAlign:"center"}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,color:C.muted,letterSpacing:1}}>Match {matchIndex+1} of {totalMatches}</div><div style={{fontSize:11,color:"#444",marginTop:2}}>{team.name}</div></div>
+        <button onClick={onNext} style={{padding:"7px 14px",background:onNext?"transparent":C.grass,border:`1px solid ${onNext?C.border:C.grass}`,borderRadius:5,color:onNext?C.soft:"#fff",fontSize:13,cursor:"pointer",fontFamily:"inherit",fontWeight:onNext?400:700}}>{onNext?"Next →":"+ Add Match"}</button>
+      </div>
+      <Breadcrumb crumbs={[{label:season.name,onClick:()=>onBack("home")},{label:tournament.name,onClick:()=>onBack("tournament")},{label:team.name,onClick:()=>onBack("team")},{label:`Match ${match.num}${match.opposition?" vs "+match.opposition:""}`}]}/>
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}><h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:24,fontWeight:700,color:C.lime,margin:0}}>Match {match.num}</h2><StatusBadge status={match.status}/></div>
+        <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+          <div style={{flex:2,minWidth:130}}><Lbl mt={0}>Opposition</Lbl><Inp placeholder="e.g. Westcombe Park" value={match.opposition} onChange={e=>patchMatch(match.id,team.id,{opposition:e.target.value})}/></div>
+          <div style={{minWidth:85}}><Lbl mt={0}>Kick-off</Lbl><Inp placeholder="10:30" value={match.time} onChange={e=>patchMatch(match.id,team.id,{time:e.target.value})}/></div>
+          <div style={{minWidth:65}}><Lbl mt={0}>Pitch</Lbl><Inp placeholder="5" style={{width:65}} value={match.pitch} onChange={e=>patchMatch(match.id,team.id,{pitch:e.target.value})}/></div>
+        </div>
+      </Card>
+      <ScorePanel match={match} players={teamPlayers} patchMatch={(mid,patch)=>patchMatch(mid,team.id,patch)}/>
+      {match.status!=="done"&&(
+        <Card>
+          <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1.5,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>⚡ Auto-Pick</div>
+          <p style={{fontSize:12,color:C.muted,marginBottom:10}}>Tap to prioritise, then generate.</p>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:12}}>{teamPlayers.map(p=><button key={p.id} onClick={()=>tb(p.id)} style={{padding:"5px 12px",borderRadius:4,fontSize:13,cursor:"pointer",fontFamily:"inherit",background:boostIds.includes(p.id)?C.amber:"#2a2a2a",color:boostIds.includes(p.id)?"#111":C.soft,border:`1px solid ${boostIds.includes(p.id)?C.amber:"#333"}`}}>{p.name}</button>)}</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            {canPickFirst&&<PBtn style={{marginTop:0}} onClick={()=>doAutoPick(1)}>Pick 1st Half →</PBtn>}
+            {canPickSecond&&<PBtn style={{marginTop:0}} onClick={()=>doAutoPick(2)}>Pick 2nd Half →</PBtn>}
+            {match.status==="setup"&&<PBtn style={{marginTop:0}} color={C.blue} onClick={doAutoPickBoth}>Pick Both →</PBtn>}
+          </div>
+        </Card>
+      )}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+        <HalfPanel half={1} match={match} players={teamPlayers} pitchSize={pitchSize} patchMatch={(mid,patch)=>patchMatch(mid,team.id,patch)} completeHalf={doCompleteHalf} recordChange={recordChange} notify={notify} onReview={setReviewing}/>
+        <HalfPanel half={2} match={match} players={teamPlayers} pitchSize={pitchSize} patchMatch={(mid,patch)=>patchMatch(mid,team.id,patch)} completeHalf={doCompleteHalf} recordChange={recordChange} notify={notify} onReview={setReviewing}/>
+      </div>
+      {match.changes?.length>0&&<Card><div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1.5,marginBottom:10,fontFamily:"'Barlow Condensed',sans-serif"}}>Changes</div>{match.changes.map((c,i)=><div key={i} style={{display:"flex",gap:10,alignItems:"center",padding:"6px 0",borderBottom:`1px solid ${C.border}`,fontSize:13}}><span style={{color:C.muted,width:55,flexShrink:0}}>{c.half===1?"1st":"2nd"} half</span><span style={{color:C.red,fontWeight:600}}>{pn(c.offId)}</span><span style={{color:C.muted}}>→</span><span style={{color:C.lime,fontWeight:600}}>{pn(c.onId)}</span></div>)}</Card>}
+      <Card>
+        <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1.5,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>Player Status</div>
+        <p style={{fontSize:12,color:C.muted,marginBottom:10}}><strong style={{color:C.lime}}>Green</strong> = available · <strong style={{color:"#555"}}>Grey</strong> = out · <strong style={{color:C.red}}>Red</strong> = ill</p>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+          {teamPlayers.map(p=>{const r=tournament.roster.find(x=>x.playerId===p.id);const isIll=r?.ill||false;const isAvail=r?.attending&&!isIll;return <button key={p.id} onClick={()=>updateRosterPlayer(p.id,isIll?{ill:false,attending:true}:isAvail?{attending:false}:{ill:true,attending:false})} style={{padding:"5px 12px",borderRadius:4,fontSize:13,cursor:"pointer",background:isIll?C.red:isAvail?C.grass:"#444",color:"#fff",border:"none"}}>{p.name}{isIll?" 🤒":!isAvail?" ⛔":""}</button>;})}
+        </div>
+        <p style={{fontSize:11,color:"#444",marginTop:8}}>Tap: Available → Out → Ill → Available</p>
+      </Card>
+      {reviewing&&<SelectionEditorWrapper half={reviewing} getDraft={getDraft} pitchSize={pitchSize} players={teamPlayers} onConfirm={confirmSel} onCancel={()=>{setReviewing(null);setDraft(null);}}/>}
+    </>
+  );
+}
+
+function TeamView({team,tournament,season,seasonPlayers,pitchSize,patchMatch,createMatch,completeHalf,recordChange,autoPick,notify,updateRosterPlayer,onBack}){
+  const[activeMatchId,setActiveMatchId]=useState(null);
+  const activeMatch=team.matches.find(m=>m.id===activeMatchId);
+  const matchIndex=team.matches.findIndex(m=>m.id===activeMatchId);
+  const teamPlayers=tournament.roster.filter(r=>r.teamId===team.id&&r.attending&&!r.ill).map(r=>{const sp=seasonPlayers.find(p=>p.id===r.playerId);return sp?{...sp,tournamentHalves:r.tournamentHalves??0}:null;}).filter(Boolean);
+  const maxT=Math.max(...teamPlayers.map(p=>p.tournamentHalves),1);
+  const addAndGo=()=>{const newId=createMatch(team.id);if(newId)setTimeout(()=>setActiveMatchId(newId),50);};
+  if(activeMatch)return <MatchView match={activeMatch} teamPlayers={teamPlayers} pitchSize={pitchSize} patchMatch={patchMatch} autoPick={autoPick} completeHalf={completeHalf} recordChange={recordChange} notify={notify} updateRosterPlayer={updateRosterPlayer} tournament={tournament} team={team} season={season} matchIndex={matchIndex} totalMatches={team.matches.length} onBack={onBack} onPrev={matchIndex>0?()=>setActiveMatchId(team.matches[matchIndex-1].id):null} onNext={matchIndex<team.matches.length-1?()=>setActiveMatchId(team.matches[matchIndex+1].id):addAndGo}/>;
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:season.name,onClick:()=>onBack("home")},{label:tournament.name,onClick:()=>onBack("tournament")},{label:team.name}]}/>
+      <div style={{marginBottom:16}}><h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:24,fontWeight:900,color:C.amber,margin:0}}>{team.name}</h2><div style={{fontSize:12,color:C.muted,marginTop:2}}>{teamPlayers.length} players · {team.matches.length} match{team.matches.length!==1?"es":""}</div></div>
+      <SHead>Matches</SHead>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(148px,1fr))",gap:10,marginBottom:22}}>
+        {team.matches.map(m=>{const s=m.score||{us:0,them:0};const result=m.status==="done"?(s.us>s.them?"W":s.us<s.them?"L":"D"):null;const rc=result==="W"?C.lime:result==="L"?C.red:C.amber;return <div key={m.id} onClick={()=>setActiveMatchId(m.id)} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:14,cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.borderColor=C.lime} onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}><div style={{fontSize:11,color:C.muted,fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:1,textTransform:"uppercase",marginBottom:3}}>Match {m.num}</div><div style={{fontSize:15,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",marginBottom:4,color:C.text}}>{m.opposition||"vs TBC"}</div><div style={{fontSize:11,color:C.muted,marginBottom:4}}>{m.time&&`⏱ ${m.time}`}{m.pitch&&` · P${m.pitch}`}</div>{m.status!=="setup"&&<div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,marginBottom:4}}><span style={{color:C.lime}}>{s.us||0}</span><span style={{color:C.muted}}> – </span><span style={{color:C.amber}}>{s.them||0}</span>{result&&<span style={{marginLeft:6,color:rc,fontSize:12}}>{result}</span>}</div>}<StatusBadge status={m.status}/></div>;})}
+        <div onClick={addAndGo} style={{background:"transparent",border:`1px dashed ${C.border}`,borderRadius:8,padding:14,cursor:"pointer",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:6,minHeight:100}} onMouseEnter={e=>e.currentTarget.style.borderColor=C.lime} onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}><span style={{fontSize:26,color:C.lime}}>＋</span><span style={{color:C.soft,fontSize:13}}>Add Match</span></div>
+      </div>
+      <SHead>Game Time — {team.name}</SHead>
+      <Card>
+        {teamPlayers.length===0&&<p style={{color:C.muted,fontSize:13}}>No players assigned.</p>}
+        {[...teamPlayers].sort((a,b)=>(a.tournamentHalves??0)-(b.tournamentHalves??0)).map(p=>(
+          <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}>
+            <span style={{width:110,fontSize:13,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}{p.isGuest?" 👤":""}</span>
+            <div style={{flex:1,height:6,background:"#252525",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",background:C.lime,borderRadius:3,width:`${maxT>0?((p.tournamentHalves??0)/maxT)*100:0}%`,transition:"width 0.3s"}}/></div>
+            <span style={{width:28,textAlign:"right",fontSize:13,color:C.lime,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",flexShrink:0}}>{p.tournamentHalves??0}</span>
+          </div>
+        ))}
+      </Card>
+    </>
+  );
+}
+
+function TournamentView({tournament,season,seasonPlayers,patchTournament,patchMatch,createMatch,completeHalf,recordChange,autoPick,notify,updateRosterPlayer,onBack,onArchive}){
+  const[activeTeamId,setActiveTeamId]=useState(null);
+  const[showMoveModal,setShowMoveModal]=useState(false);
+  if(tournament.status==="roster")return <RosterScreen tournament={tournament} seasonPlayers={seasonPlayers} onUpdate={patchTournament} onProceed={()=>patchTournament({...tournament,status:"assign"})} onBack={()=>onBack("home")}/>;
+  if(tournament.status==="assign")return <TeamAssignScreen tournament={tournament} seasonPlayers={seasonPlayers} onUpdate={patchTournament} onProceed={()=>patchTournament({...tournament,status:"active"})}/>;
+  const activeTeam=tournament.teams.find(t=>t.id===activeTeamId);
+  if(activeTeam)return <TeamView team={activeTeam} tournament={tournament} season={season} seasonPlayers={seasonPlayers} pitchSize={tournament.pitchSize} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onBack={(dest)=>{if(dest==="home")onBack("home");else setActiveTeamId(null);}}/>;
+  const attending=tournament.roster.filter(r=>r.attending&&!r.ill);
+  const absent=tournament.roster.filter(r=>!r.attending||r.ill);
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:season.name,onClick:()=>onBack("home")},{label:tournament.name}]}/>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16,flexWrap:"wrap",gap:8}}>
+        <div><h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.amber,margin:0}}>{tournament.name}</h2><div style={{fontSize:12,color:C.muted,marginTop:2}}>{tournament.date}{tournament.location?` · ${tournament.location}`:""} · {tournament.teams.length} team{tournament.teams.length!==1?"s":""}</div></div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button onClick={()=>patchTournament({...tournament,status:"roster"})} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,color:C.soft,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✏ Attendance</button>
+          <button onClick={()=>patchTournament({...tournament,status:"assign"})} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,color:C.soft,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✏ Teams</button>
+          {tournament.teams.length>1&&<button onClick={()=>setShowMoveModal(true)} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.blue}`,borderRadius:6,color:C.blue,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>⇄ Move Players</button>}
+          <button onClick={onArchive} style={{padding:"8px 14px",background:"transparent",border:`2px solid ${C.amber}`,borderRadius:6,color:C.amber,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif"}}>🏁 End Tournament</button>
+        </div>
+      </div>
+      {absent.length>0&&<div style={{background:"#1a1a1a",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",marginBottom:14,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}><span style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,flexShrink:0}}>Absent today:</span>{absent.map(r=>{const p=seasonPlayers.find(x=>x.id===r.playerId);return p?<span key={p.id} style={{fontSize:12,color:C.muted,opacity:0.6}}>{p.name}{r.ill?" 🤒":""}</span>:null;})}</div>}
+      <SHead>Teams</SHead>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:12,marginBottom:22}}>
+        {tournament.teams.map(team=>{const members=attending.filter(r=>r.teamId===team.id);const doneM=team.matches.filter(m=>m.status==="done").length;return(
+          <div key={team.id} onClick={()=>setActiveTeamId(team.id)} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:18,cursor:"pointer"}} onMouseEnter={e=>e.currentTarget.style.borderColor=C.lime} onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,marginBottom:4}}>{team.name}</div>
+            <div style={{fontSize:12,color:C.muted,marginBottom:10}}>{members.length} players · {team.matches.length} match{team.matches.length!==1?"es":""}{doneM>0?` (${doneM} done)`:""}</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:8}}>{members.slice(0,8).map(r=>{const p=seasonPlayers.find(x=>x.id===r.playerId);return p?<span key={p.id} style={{fontSize:11,color:C.soft,background:"#252525",padding:"2px 6px",borderRadius:3}}>{p.name}</span>:null;})}{members.length>8&&<span style={{fontSize:11,color:C.muted}}>+{members.length-8}</span>}</div>
+            <span style={{color:C.lime,fontSize:14}}>Open →</span>
+          </div>
+        );})}
+      </div>
+      <SHead>Game Time This Tournament</SHead>
+      <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(tournament.teams.length,2)},1fr)`,gap:12,marginBottom:22}}>
+        {tournament.teams.map(team=>{const members=attending.filter(r=>r.teamId===team.id);const maxT=Math.max(...members.map(r=>r.tournamentHalves??0),1);return(
+          <Card key={team.id} style={{marginBottom:0}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:14,fontWeight:700,color:C.amber,marginBottom:10}}>{team.name}</div>
+            {members.length===0&&<p style={{fontSize:12,color:C.muted}}>No players</p>}
+            {[...members].sort((a,b)=>(a.tournamentHalves??0)-(b.tournamentHalves??0)).map(r=>{const p=seasonPlayers.find(x=>x.id===r.playerId);if(!p)return null;return <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}><span style={{width:90,fontSize:12,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span><div style={{flex:1,height:5,background:"#252525",borderRadius:3,overflow:"hidden"}}><div style={{height:"100%",background:C.lime,borderRadius:3,width:`${maxT>0?((r.tournamentHalves??0)/maxT)*100:0}%`}}/></div><span style={{width:22,textAlign:"right",fontSize:12,color:C.lime,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",flexShrink:0}}>{r.tournamentHalves??0}</span></div>;})}
+          </Card>
+        );})}
+      </div>
+      {showMoveModal&&<MovePlayerModal tournament={tournament} seasonPlayers={seasonPlayers} onUpdate={patchTournament} onClose={()=>setShowMoveModal(false)}/>}
+    </>
+  );
+}
+
+function SavesManager({season,onLoad,onClose,notify}){
+  const[slots,setSlots]=useState([]);const[saveName,setSaveName]=useState("");const[loading,setLoading]=useState(true);const[confirm,setConfirm]=useState(null);
+  useEffect(()=>{const s=lsGet(LS_SAVES);setSlots(s||[]);setLoading(false);},[]);
+  const persistSlots=(next)=>{setSlots(next);lsSet(LS_SAVES,next);};
+  const doSave=()=>{if(!season)return;const name=saveName.trim()||`${season.name} — ${fmtNow()}`;if(slots.length>=MAX_SLOTS){notify(`Max ${MAX_SLOTS} slots`,"err");return;}const id=uid();if(!lsSet(`clipboard_save_${id}`,season)){notify("Save failed","err");return;}persistSlots([{id,name,savedAt:fmtNow(),seasonName:season.name},...slots]);setSaveName("");notify(`Saved as "${name}" ✓`);};
+  const doDelete=(id)=>{lsDel(`clipboard_save_${id}`);persistSlots(slots.filter(s=>s.id!==id));setConfirm(null);notify("Save deleted");};
+  const doLoad=(slot)=>{const data=lsGet(`clipboard_save_${slot.id}`);if(!data?.players){notify("Save not found","err");return;}onLoad(data);onClose();notify(`"${slot.name}" loaded ✓`);};
+  return(
+    <ModalWrap title="Saved Sessions" onClose={onClose} wide>
+      {season&&<div style={{background:"#161616",border:`1px solid ${C.border}`,borderRadius:8,padding:14,marginBottom:20}}><div style={{fontSize:12,color:C.lime,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>💾 Save Current Session</div><div style={{display:"flex",gap:8}}><Inp placeholder="e.g. Before next tournament" value={saveName} onChange={e=>setSaveName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")doSave();}}/><button onClick={doSave} style={{padding:"8px 16px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Save Now</button></div><div style={{fontSize:11,color:C.muted,marginTop:6}}>{slots.length}/{MAX_SLOTS} slots</div></div>}
+      <div style={{fontSize:12,color:C.muted,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Saved Sessions</div>
+      {loading&&<p style={{color:C.muted,fontSize:13}}>Loading…</p>}
+      {!loading&&slots.length===0&&<p style={{color:C.muted,fontSize:13}}>No saves yet.</p>}
+      {slots.map(slot=>(
+        <div key={slot.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
+          <div><div style={{fontSize:14,fontWeight:600,color:C.text}}>{slot.name}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{slot.seasonName} · {slot.savedAt}</div></div>
+          <div style={{display:"flex",gap:8,flexShrink:0}}>
+            {confirm?.action==="load"&&confirm.id===slot.id?(<><span style={{fontSize:12,color:C.amber,alignSelf:"center"}}>Overwrite?</span><button onClick={()=>doLoad(slot)} style={{padding:"5px 12px",borderRadius:4,border:"none",background:C.amber,color:"#111",fontSize:12,fontWeight:700,cursor:"pointer"}}>Yes</button><button onClick={()=>setConfirm(null)} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${C.border}`,background:"transparent",color:C.soft,fontSize:12,cursor:"pointer"}}>Cancel</button></>)
+            :confirm?.action==="delete"&&confirm.id===slot.id?(<><span style={{fontSize:12,color:C.red,alignSelf:"center"}}>Delete?</span><button onClick={()=>doDelete(slot.id)} style={{padding:"5px 12px",borderRadius:4,border:"none",background:C.red,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer"}}>Delete</button><button onClick={()=>setConfirm(null)} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${C.border}`,background:"transparent",color:C.soft,fontSize:12,cursor:"pointer"}}>Cancel</button></>)
+            :(<><button onClick={()=>setConfirm({action:"load",id:slot.id})} style={{padding:"5px 12px",borderRadius:4,border:`1px solid ${C.lime}`,background:"transparent",color:C.lime,fontSize:12,cursor:"pointer",fontWeight:600}}>Load</button><button onClick={()=>setConfirm({action:"delete",id:slot.id})} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${C.border}`,background:"transparent",color:C.muted,fontSize:12,cursor:"pointer"}}>Delete</button></>)}
+          </div>
+        </div>
+      ))}
+    </ModalWrap>
+  );
+}
+
+function SeasonSetupScreen({onDone,onLoadSaves,onImportCode}){
+  const[seasonName,setSeasonName]=useState("");const[pitchSize,setPitchSize]=useState("12");const[names,setNames]=useState(Array(15).fill(""));const[err,setErr]=useState("");const[importStr,setImportStr]=useState("");const[showImport,setShowImport]=useState(false);
+  const upd=(i,v)=>{const n=[...names];n[i]=v;setNames(n);setErr("");};
+  const go=()=>{const filled=names.map(n=>n.trim()).filter(Boolean);if(!seasonName.trim()){setErr("Enter a season name");return;}if(filled.length<2){setErr("Add at least 2 players");return;}onDone({seasonName:seasonName.trim(),pitchSize:parseInt(pitchSize)||9,playerNames:filled});};
+  return(
+    <div style={{display:"flex",justifyContent:"center",paddingTop:20}}>
+      <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"32px 28px",width:"100%",maxWidth:500}}>
+        <div style={{fontSize:36,textAlign:"center",marginBottom:6}}>📋</div>
+        <h1 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:34,fontWeight:900,textAlign:"center",color:C.lime,letterSpacing:2,marginBottom:4}}>The Clipboard</h1>
+        <p style={{textAlign:"center",color:C.muted,fontSize:13,marginBottom:24}}>Season · Tournament · Match · Fair game time for every kid</p>
+        <div style={{background:"#1a2010",border:`1px solid ${C.lime}`,borderRadius:8,padding:16,marginBottom:24}}>
+          <div style={{fontSize:12,color:C.lime,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>↙ Restore from Export Code</div>
+          {!showImport?<button onClick={()=>setShowImport(true)} style={{width:"100%",padding:"10px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:1}}>Paste Export Code →</button>:<><textarea value={importStr} onChange={e=>setImportStr(e.target.value)} placeholder="Paste your export code here…" style={{background:"#111",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:11,width:"100%",height:100,outline:"none",resize:"none",fontFamily:"monospace",boxSizing:"border-box"}}/><button onClick={()=>onImportCode(importStr)} style={{width:"100%",padding:"10px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:1,marginTop:8}}>Load Session →</button></>}
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:20}}><div style={{flex:1,height:1,background:C.border}}/><span style={{fontSize:11,color:C.muted}}>or start fresh</span><div style={{flex:1,height:1,background:C.border}}/></div>
+        {err&&<div style={{background:"#3a1010",border:`1px solid ${C.red}`,borderRadius:6,padding:"8px 12px",fontSize:13,color:"#ff9999",marginBottom:12}}>{err}</div>}
+        <Lbl mt={0}>Season Name</Lbl><Inp placeholder="e.g. 2025/26 Season" value={seasonName} onChange={e=>{setSeasonName(e.target.value);setErr("");}}/>
+        <Lbl>Default players on pitch per side</Lbl><Inp type="number" style={{width:90}} min={3} max={15} value={pitchSize} onChange={e=>setPitchSize(e.target.value)}/>
+        <Lbl>Squad — one name per row</Lbl>
+        <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:300,overflowY:"auto",paddingRight:2}}>
+          {names.map((n,i)=><div key={i} style={{display:"flex",gap:6,alignItems:"center"}}><span style={{color:C.muted,width:22,textAlign:"right",fontSize:12,flexShrink:0}}>{i+1}</span><Inp placeholder={`Player ${i+1}`} value={n} onChange={e=>upd(i,e.target.value)}/>{names.length>2&&<button onClick={()=>setNames(n=>n.filter((_,idx)=>idx!==i))} style={{background:"none",border:"none",color:"#555",fontSize:16,cursor:"pointer",flexShrink:0,padding:"0 4px"}}>✕</button>}</div>)}
+        </div>
+        <button onClick={()=>setNames(n=>[...n,""])} style={{background:"none",border:`1px dashed ${C.border}`,borderRadius:5,color:C.muted,fontSize:13,cursor:"pointer",padding:"7px 14px",marginTop:8,width:"100%",fontFamily:"inherit"}}>+ Add player</button>
+        <PBtn onClick={go} style={{marginTop:16}}>Create Season →</PBtn>
+        <div style={{textAlign:"center",marginTop:10}}><Ghost onClick={onLoadSaves}>Load from named save</Ghost></div>
+      </div>
+    </div>
+  );
+}
+
+function SeasonHome({season,players,onOpenTournament,onNewTournament,onSquad,onSeasonStats}){
+  const maxS=Math.max(...players.map(p=>p.seasonHalves),1);
+  const maxR=Math.max(...players.map(p=>p.recentHalves??0),1);
+  return(
+    <>
+      <div style={{marginBottom:20}}><h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>{season.name}</h2><div style={{fontSize:12,color:C.muted,marginTop:2}}>{players.length} players · {season.tournaments.length} tournament{season.tournaments.length!==1?"s":""} archived</div></div>
+      <div style={{display:"flex",gap:10,marginBottom:22,flexWrap:"wrap"}}><PBtn style={{width:"auto",marginTop:0,padding:"10px 20px"}} onClick={onNewTournament}>+ New Tournament</PBtn><Ghost onClick={onSquad}>Manage Squad</Ghost><Ghost onClick={onSeasonStats}>Season Stats</Ghost></div>
+      {season.activeTournament&&<><SHead>Active Tournament</SHead><div style={{background:C.card,border:`1px solid ${C.lime}`,borderRadius:10,padding:18,marginBottom:20,cursor:"pointer"}} onClick={onOpenTournament}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime}}>{season.activeTournament.name}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{season.activeTournament.date} · {season.activeTournament.teams?.length||1} team{(season.activeTournament.teams?.length||1)!==1?"s":""} · {season.activeTournament.teams?.reduce((a,t)=>a+t.matches.length,0)||0} matches</div></div><span style={{color:C.lime,fontSize:20}}>›</span></div></div></>}
+      {season.tournaments.length>0&&<><SHead>Past Tournaments</SHead><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10,marginBottom:22}}>{season.tournaments.map(t=><div key={t.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:14}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:C.amber,marginBottom:3}}>{t.name}</div><div style={{fontSize:12,color:C.muted}}>{t.date} · {t.teams?.length||1} team{(t.teams?.length||1)!==1?"s":""}</div></div>)}</div></>}
+      <SHead>Season Game Time</SHead>
+      <Card>{[...players].sort((a,b)=>a.seasonHalves-b.seasonHalves).map(p=>{const fs=fairScore(p,maxS,maxR);return <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}><span style={{width:110,fontSize:13,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",opacity:p.ill?0.35:1}}>{p.name}{p.isGuest?" 👤":""}{p.ill?" 🤒":""}</span><div style={{flex:1}}><FBar score={Math.max(fs,0)}/></div><span style={{width:55,textAlign:"right",fontSize:11,color:C.muted,flexShrink:0,fontFamily:"'Barlow Condensed',sans-serif"}}>{p.seasonHalves} hlvs</span></div>;})}</Card>
+    </>
+  );
+}
+
+function SquadManager({season,players,updatePlayer,addPlayer,removePlayer,onBack}){
+  const[gName,setGName]=useState("");const[pName,setPName]=useState("");const[confirmRemove,setConfirmRemove]=useState(null);
+  const maxS=Math.max(...players.map(p=>p.seasonHalves),1);const maxR=Math.max(...players.map(p=>p.recentHalves??0),1);
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:season.name,onClick:onBack},{label:"Manage Squad"}]}/>
+      <Card>
+        {players.map(p=>{const fs=fairScore(p,maxS,maxR);return(
+          <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.border}`,gap:10,flexWrap:"wrap"}}>
+            <div style={{minWidth:140}}><div style={{fontSize:15,fontWeight:500,opacity:p.ill?0.4:1}}>{p.name}{p.isGuest?" 👤":""}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>Season: {p.seasonHalves} · Recent: {p.recentHalves??0}</div><div style={{marginTop:4,maxWidth:160}}><FBar score={Math.max(fs,0)}/></div></div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              <button onClick={()=>updatePlayer(p.id,{available:!p.available,ill:false})} style={{padding:"5px 10px",borderRadius:4,border:"none",fontSize:12,cursor:"pointer",background:p.available&&!p.ill?C.grass:"#333",color:"#fff"}}>{p.available&&!p.ill?"✓ Avail":"Unavail"}</button>
+              <button onClick={()=>updatePlayer(p.id,{ill:!p.ill,available:p.ill})} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${p.ill?C.red:"#444"}`,fontSize:12,cursor:"pointer",background:p.ill?C.red:"#2a2a2a",color:"#fff"}}>{p.ill?"🤒 Ill":"Mark Ill"}</button>
+              {confirmRemove===p.id?(<>{p.seasonHalves>0&&<span style={{fontSize:11,color:C.amber,alignSelf:"center"}}>Has {p.seasonHalves} hlvs!</span>}<button onClick={()=>{removePlayer(p.id);setConfirmRemove(null);}} style={{padding:"5px 10px",borderRadius:4,border:"none",background:C.red,color:"#fff",fontSize:12,cursor:"pointer",fontWeight:700}}>Remove</button><button onClick={()=>setConfirmRemove(null)} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${C.border}`,background:"transparent",color:C.soft,fontSize:12,cursor:"pointer"}}>Cancel</button></>)
+              :<button onClick={()=>setConfirmRemove(p.id)} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${C.border}`,fontSize:12,cursor:"pointer",background:"transparent",color:C.muted}}>Remove</button>}
+            </div>
+          </div>
+        );})}
+        <div style={{marginTop:16,display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+          <div><Lbl mt={0}>Add guest (this tournament only)</Lbl><div style={{display:"flex",gap:6}}><Inp placeholder="Guest name…" value={gName} onChange={e=>setGName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&gName.trim()){addPlayer(gName,true);setGName("");}}}/><button onClick={()=>{if(gName.trim()){addPlayer(gName,true);setGName("");}}} style={{padding:"8px 12px",background:C.blue,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Add</button></div></div>
+          <div><Lbl mt={0}>Add permanent player</Lbl><div style={{display:"flex",gap:6}}><Inp placeholder="Player name…" value={pName} onChange={e=>setPName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&pName.trim()){addPlayer(pName,false);setPName("");}}}/><button onClick={()=>{if(pName.trim()){addPlayer(pName,false);setPName("");}}} style={{padding:"8px 12px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Add</button></div></div>
+        </div>
+      </Card>
+    </>
+  );
+}
+
+function StatsView({season,maxS,maxR,openM,setView}){
+  const allT=[...season.tournaments,...(season.activeTournament?[season.activeTournament]:[])];
+  const allM=allT.flatMap(t=>(t.teams||[]).flatMap(tm=>tm.matches||[]));
+  const done=allM.filter(m=>m.status==="done");
+  const w=done.filter(m=>(m.score?.us||0)>(m.score?.them||0)).length,d=done.filter(m=>(m.score?.us||0)===(m.score?.them||0)).length,l=done.filter(m=>(m.score?.us||0)<(m.score?.them||0)).length;
+  const tf=done.reduce((a,m)=>a+(m.score?.us||0),0),ta=done.reduce((a,m)=>a+(m.score?.them||0),0);
+  const tryTally={};done.flatMap(m=>m.score?.tries||[]).forEach(t=>{if(t.playerId)tryTally[t.playerId]=(tryTally[t.playerId]||0)+1;});
+  const topScorers=Object.entries(tryTally).sort((a,b)=>b[1]-a[1]);
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:season.name,onClick:()=>setView("home")},{label:"Season Stats"}]}/>
+      {done.length>0&&<><SHead>Season Record</SHead><Card><div style={{display:"flex",gap:16,flexWrap:"wrap",marginBottom:topScorers.length>0?14:0}}>{[["Won",w,C.lime],["Drawn",d,C.amber],["Lost",l,C.red],["For",tf,C.lime],["Against",ta,C.amber],["Matches",done.length,C.text]].map(([lbl,val,col])=><div key={lbl} style={{textAlign:"center"}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:32,fontWeight:900,color:col}}>{val}</div><div style={{fontSize:11,color:C.muted}}>{lbl}</div></div>)}</div>{topScorers.length>0&&<><div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:8,fontFamily:"'Barlow Condensed',sans-serif"}}>Season Try Scorers</div>{topScorers.map(([pid,count],i)=><div key={pid} style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}><span style={{width:20,fontSize:11,color:C.muted,textAlign:"right",flexShrink:0}}>{i+1}</span><span style={{flex:1,fontSize:13}}>{season.players.find(p=>p.id===pid)?.name||"?"}</span><span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:C.lime}}>{count} {count===1?"try":"tries"}</span></div>)}</>}</Card></>}
+      <SHead>Fairness Rankings</SHead>
+      <Card>{[...season.players].sort((a,b)=>fairScore(b,maxS,maxR)-fairScore(a,maxS,maxR)).map((p,i)=>{const fs=fairScore(p,maxS,maxR);return <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{width:22,fontSize:12,color:C.muted,textAlign:"right",flexShrink:0}}>{i+1}</span><span style={{width:120,fontSize:13,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}{p.isGuest?" 👤":""}{p.ill?" 🤒":""}</span><div style={{flex:1}}><FBar score={Math.max(fs,0)}/></div><span style={{width:55,textAlign:"right",fontSize:11,color:C.muted,flexShrink:0}}>{p.seasonHalves} hlvs</span></div>;})}</Card>
+      <SHead>Tournament History</SHead>
+      {season.tournaments.length===0&&<p style={{color:C.muted,fontSize:13}}>No archived tournaments yet.</p>}
+      {season.tournaments.map(t=><Card key={t.id}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,color:C.amber,marginBottom:4}}>{t.name}</div><div style={{fontSize:12,color:C.muted,marginBottom:12}}>{t.date} · {t.teams?.length||1} team{(t.teams?.length||1)!==1?"s":""}</div>{t.playerSnapshot&&<div style={{display:"flex",flexWrap:"wrap",gap:5}}>{t.playerSnapshot.map(p=><div key={p.id} style={{background:"#252525",border:"1px solid #333",borderRadius:5,padding:"3px 9px",fontSize:12,color:C.soft}}>{p.name} <span style={{color:C.lime,fontWeight:700}}>{p.seasonHalves}</span></div>)}</div>}</Card>)}
+      <Ghost onClick={()=>openM("resetConfirm")} style={{color:C.red,borderColor:C.red,marginTop:8}}>⚠ Full Season Reset</Ghost>
+    </>
+  );
+}
+
+function App(){
+  const[season,setSeason]=useState(null);
+  const[view,setView]=useState("boot");
+  const[toast,setToast]=useState(null);
+  const[modals,setModals]=useState({});
+  const[importStr,setImportStr]=useState("");
+  const[loading,setLoading]=useState(true);
+  const[showSaves,setShowSaves]=useState(false);
+  const[lastSaved,setLastSaved]=useState(null);
+  const[newT,setNewT]=useState({name:"",date:today(),location:"",pitchSize:"",numTeams:1,teamNames:["Team 1","Team 2","Team 3","Team 4"]});
+  const[startupSaves,setStartupSaves]=useState([]);
+  const[showStartup,setShowStartup]=useState(false);
+
+  useEffect(()=>{
+    const saved=lsGet(LS_KEY);const saves=lsGet(LS_SAVES)||[];
+    setStartupSaves(saves);
+    if(saved?.players){const m=migrateSeason(saved);if(m!==saved)lsSet(LS_KEY,m);setSeason(m);setLastSaved("Restored");if(saves.length>0)setShowStartup(true);else setView("home");}
+    else if(saves.length>0){setShowStartup(true);}
+    else{setView("setup");}
+    setLoading(false);
+  },[]);
+
+  const save=useCallback((data)=>{const ok=lsSet(LS_KEY,data);if(ok)setLastSaved(fmtNow());},[]);
+  const setS=useCallback((fn)=>{setSeason(prev=>{const next=typeof fn==="function"?fn(prev):{...prev,...fn};save(next);return next;});},[save]);
+  const notify=useCallback((msg,type="ok")=>{const id=uid();setToast({msg,type,id});setTimeout(()=>setToast(t=>t?.id===id?null:t),2800);},[]);
+  const openM=k=>setModals(m=>({...m,[k]:true}));
+  const closeM=k=>setModals(m=>({...m,[k]:false}));
+
+  const handleSeasonStart=({seasonName,pitchSize,playerNames})=>{const s=blankSeason(seasonName,pitchSize,playerNames);setSeason(s);save(s);setView("home");};
+  const updatePlayer=(id,patch)=>setS(s=>({...s,players:s.players.map(p=>p.id===id?{...p,...patch}:p)}));
+  const addPlayer=(name,isGuest=false)=>{if(!name.trim())return;setS(s=>({...s,players:[...s.players,{id:uid(),name:name.trim(),seasonHalves:0,recentHalves:0,available:true,ill:false,isGuest}]}));};
+  const removePlayer=id=>setS(s=>({...s,players:s.players.filter(p=>p.id!==id)}));
+
+  const startTournament=()=>{
+    if(!newT.name.trim()){notify("Enter a tournament name","err");return;}
+    const num=parseInt(newT.numTeams)||1;
+    const t=blankTournament(newT.name.trim(),newT.date||today(),newT.location,parseInt(newT.pitchSize)||season.pitchSize,num,newT.teamNames.slice(0,num),season.players);
+    setS(s=>({...s,activeTournament:t,players:s.players.map(p=>({...p,recentHalves:0,available:true}))}));
+    closeM("newTournament");setNewT({name:"",date:today(),location:"",pitchSize:"",numTeams:1,teamNames:["Team 1","Team 2","Team 3","Team 4"]});
+    setView("tournament");notify(`${t.name} started ✓`);
+  };
+
+  const archiveTournament=()=>{
+    setS(s=>{
+      if(!s.activeTournament)return s;
+      const rMap={};
+      if(s.activeTournament.roster){
+        s.activeTournament.roster.forEach(r=>{rMap[r.playerId]=r.tournamentHalves||0;});
+      } else if(s.activeTournament.matches){
+        s.activeTournament.matches.forEach(m=>{
+          if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}
+          if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}
+        });
+      }
+      const archived={...s.activeTournament,status:"archived",playerSnapshot:s.players.map(p=>({id:p.id,name:p.name,seasonHalves:p.seasonHalves+(rMap[p.id]||0)}))};
+      return{...s,activeTournament:null,tournaments:[archived,...s.tournaments],players:s.players.map(p=>({...p,seasonHalves:p.seasonHalves+(rMap[p.id]||0),recentHalves:rMap[p.id]||0}))};
+    });
+    closeM("archiveConfirm");setView("home");notify("Tournament ended ✓");
+  };
+
+  const patchTournament=(t)=>setS(s=>({...s,activeTournament:t}));
+  const patchMatch=(mid,teamId,patch)=>setS(s=>({...s,activeTournament:{...s.activeTournament,teams:s.activeTournament.teams.map(t=>t.id===teamId?{...t,matches:t.matches.map(m=>m.id===mid?{...m,...patch}:m)}:t)}}));
+
+  const createMatch=(teamId)=>{
+    let newId=null;
+    setS(s=>{const team=s.activeTournament.teams.find(t=>t.id===teamId);if(!team)return s;const m={id:uid(),num:team.matches.length+1,opposition:"",time:"",pitch:"",status:"setup",score:{us:0,them:0,tries:[]},firstHalf:{on:[],bench:[]},secondHalf:{on:[],bench:[]},changes:[]};newId=m.id;return{...s,activeTournament:{...s.activeTournament,teams:s.activeTournament.teams.map(t=>t.id===teamId?{...t,matches:[...t.matches,m]}:t)}};});
+    return newId;
+  };
+
+  const autoPick=(mid,teamId,boostIds=[],half="both")=>{
+    const t=season.activeTournament;
+    const team=t.teams.find(x=>x.id===teamId);if(!team){notify("Team not found","err");return null;}
+    const teamRoster=t.roster.filter(r=>r.teamId===teamId&&r.attending&&!r.ill);
+    const teamPlayers=teamRoster.map(r=>{const sp=season.players.find(p=>p.id===r.playerId);return sp?{...sp,attending:true,tournamentHalves:r.tournamentHalves??0}:null;}).filter(Boolean);
+    if(!teamPlayers.length){notify("No available players","err");return null;}
+    const n=t.pitchSize;
+    const sorted=fairSortTeam(teamPlayers);
+    const boosted=[...sorted.filter(p=>boostIds.includes(p.id)),...sorted.filter(p=>!boostIds.includes(p.id))];
+    const fOn=boosted.slice(0,n).map(p=>p.id);
+    const fBench=boosted.slice(n).map(p=>p.id);
+    const spotsNeeded=Math.max(0,n-fBench.length);
+    const sOn=[...fBench,...fOn.slice(fOn.length-spotsNeeded)];
+    const sBench=fOn.slice(0,fOn.length-spotsNeeded);
+    const patch={};
+    if(half===1||half==="both")patch.firstHalf={on:fOn,bench:fBench};
+    if(half===2||half==="both")patch.secondHalf={on:sOn,bench:sBench};
+    if(half!==2)patch.status="setup";
+    patchMatch(mid,teamId,patch);
+    return{firstHalf:{on:fOn,bench:fBench},secondHalf:{on:sOn,bench:sBench}};
+  };
+
+  const completeHalf=(mid,teamId,half)=>{
+    const t=season.activeTournament;
+    const team=t.teams.find(x=>x.id===teamId);
+    const match=team?.matches.find(x=>x.id===mid);if(!match)return;
+    const onIds=half===1?match.firstHalf.on:match.secondHalf.on;
+    setS(s=>({...s,activeTournament:{...s.activeTournament,
+      roster:s.activeTournament.roster.map(r=>onIds.includes(r.playerId)?{...r,tournamentHalves:(r.tournamentHalves||0)+1}:r),
+      teams:s.activeTournament.teams.map(t=>t.id===teamId?{...t,matches:t.matches.map(m=>m.id===mid?{...m,status:half===1?"halftime":"done"}:m)}:t),
+    }}));
+    notify(half===1?"1st half locked ✓":"Match complete ✓");
+  };
+
+  const recordChange=(mid,teamId,half,offId,onId)=>{
+    const key=half===1?"firstHalf":"secondHalf";
+    setS(s=>{
+      const team=s.activeTournament.teams.find(x=>x.id===teamId);
+      const match=team?.matches.find(x=>x.id===mid);if(!match)return s;
+      const hd={on:[...match[key].on],bench:[...match[key].bench]};
+      hd.on=hd.on.filter(id=>id!==offId);if(!hd.on.includes(onId))hd.on.push(onId);
+      hd.bench=hd.bench.filter(id=>id!==onId);if(!hd.bench.includes(offId))hd.bench.push(offId);
+      return{...s,activeTournament:{...s.activeTournament,
+        roster:s.activeTournament.roster.map(r=>r.playerId===onId?{...r,tournamentHalves:(r.tournamentHalves||0)+0.5}:r.playerId===offId?{...r,tournamentHalves:Math.max(0,(r.tournamentHalves||0)-0.5)}:r),
+        teams:s.activeTournament.teams.map(t=>t.id===teamId?{...t,matches:t.matches.map(m=>m.id===mid?{...m,[key]:hd,changes:[...m.changes,{half,offId,onId}]}:m)}:t),
+      }};
+    });
+    const pn=id=>season.players.find(p=>p.id===id)?.name??id;
+    notify(`${pn(offId)} → ${pn(onId)}`);
+  };
+
+  const updateRosterPlayer=(playerId,patch)=>setS(s=>({...s,activeTournament:{...s.activeTournament,roster:s.activeTournament.roster.map(r=>r.playerId===playerId?{...r,...patch}:r)}}));
+
+  const doImport=()=>{const raw=dec(importStr.trim());if(!raw?.players||!raw?.name){notify("Invalid code","err");return;}const p=migrateSeason(raw);setSeason(p);save(p);setView("home");closeM("import");setImportStr("");setLastSaved(fmtNow());notify("Loaded ✓");};
+  const handleSavesLoad=(data)=>{const m=migrateSeason(data);setSeason(m);save(m);setView("home");setLastSaved(fmtNow());};
+  const fullReset=()=>{const b=blankSeason(season.name,season.pitchSize,season.players.filter(p=>!p.isGuest).map(p=>p.name));setSeason(b);save(b);closeM("resetConfirm");setView("home");notify("Season reset ✓");};
+  const startFresh=()=>{lsDel(LS_KEY);const saves=lsGet(LS_SAVES)||[];saves.forEach(s=>lsDel(`clipboard_save_${s.id}`));lsDel(LS_SAVES);setSeason(null);setLastSaved(null);setStartupSaves([]);setShowStartup(false);closeM("startFreshConfirm");setView("setup");notify("All data cleared ✓");};
+
+  const activeTournament=season?.activeTournament;
+  const maxS=Math.max(...(season?.players||[]).map(p=>p.seasonHalves),1);
+  const maxR=Math.max(...(season?.players||[]).map(p=>p.recentHalves??0),1);
+
+  if(loading)return <div style={{minHeight:"100vh",background:C.night,display:"flex",alignItems:"center",justifyContent:"center",color:C.muted,fontFamily:"sans-serif"}}>Loading…</div>;
+
+  return(
+    <div style={{minHeight:"100vh",background:C.night,color:C.text,fontFamily:"'Barlow',sans-serif"}}>
+      <style>{` *{box-sizing:border-box;margin:0;padding:0} input,select,textarea,button{font-family:inherit} ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-thumb{background:#333;border-radius:2px}`}</style>
+      <header style={{position:"sticky",top:0,zIndex:100,background:"rgba(13,13,13,0.97)",borderBottom:`1px solid ${C.border}`,backdropFilter:"blur(8px)"}}>
+        <div style={{maxWidth:980,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10,cursor:view!=="setup"?"pointer":"default"}} onClick={()=>view!=="setup"&&setView("home")}>
+            <span style={{fontSize:24}}>📋</span>
+            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v3.1w · web build</div></div>
+          </div>
+          {view!=="setup"&&!showStartup&&(
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+              <Pill active={view==="home"} onClick={()=>setView("home")}>Season</Pill>
+              {activeTournament&&<Pill active={view==="tournament"} onClick={()=>setView("tournament")}>Tournament</Pill>}
+              <Pill active={view==="squad"} onClick={()=>setView("squad")}>Squad</Pill>
+              <Pill onClick={()=>setShowSaves(true)} col={C.amber}>💾 Saves</Pill>
+              <Pill onClick={()=>openM("export")}>Export ↗</Pill>
+              <Pill onClick={()=>openM("import")}>Import ↙</Pill>
+              <Pill onClick={()=>openM("startFreshConfirm")} col={C.red}>🗑 Start Fresh</Pill>
+              {lastSaved&&<span style={{fontSize:10,color:C.muted}}>✓ {lastSaved}</span>}
+            </div>
+          )}
+        </div>
+      </header>
+      {toast&&<div style={{position:"fixed",top:64,left:"50%",transform:"translateX(-50%)",padding:"9px 22px",borderRadius:6,color:"#fff",zIndex:999,fontSize:14,fontWeight:500,boxShadow:"0 4px 20px rgba(0,0,0,0.5)",whiteSpace:"nowrap",background:toast.type==="err"?C.red:C.grass,pointerEvents:"none"}}>{toast.msg}</div>}
+      <main style={{maxWidth:980,margin:"0 auto",padding:"24px 14px 100px"}}>
+        {showStartup&&(
+          <div style={{display:"flex",justifyContent:"center",paddingTop:20}}>
+            <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"32px 28px",width:"100%",maxWidth:500}}>
+              <div style={{fontSize:36,textAlign:"center",marginBottom:6}}>📋</div>
+              <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,textAlign:"center",color:C.lime,letterSpacing:1,marginBottom:16}}>The Clipboard</h2>
+              {season&&<div style={{background:"#1a2a1a",border:`1px solid ${C.grass}`,borderRadius:8,padding:"12px 14px",marginBottom:20}}><div style={{fontSize:12,color:C.lime,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>Auto-saved session</div><div style={{fontSize:15,fontWeight:600,color:C.text}}>{season.name}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{season.players.length} players · {season.tournaments.length} archived{season.activeTournament?` · Active: ${season.activeTournament.name}`:""}</div><PBtn style={{marginTop:10}} onClick={()=>{setView("home");setShowStartup(false);}}>Continue →</PBtn></div>}
+              {startupSaves.length>0&&<><div style={{fontSize:12,color:C.muted,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Or load a named save</div>{startupSaves.map(slot=><div key={slot.id} style={{background:"#161616",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",marginBottom:8,display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}><div><div style={{fontSize:14,fontWeight:600,color:C.text}}>{slot.name}</div><div style={{fontSize:11,color:C.muted}}>{slot.seasonName} · {slot.savedAt}</div></div><button onClick={()=>{const data=lsGet(`clipboard_save_${slot.id}`);if(!data?.players){notify("Save not found","err");return;}const m=migrateSeason(data);setSeason(m);save(m);setLastSaved(fmtNow());setView("home");setShowStartup(false);notify(`"${slot.name}" loaded ✓`);}} style={{padding:"6px 14px",background:C.lime,border:"none",borderRadius:5,color:"#111",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Load</button></div>)}</>}
+              <div style={{textAlign:"center",marginTop:16}}><button onClick={()=>openM("startFreshConfirm")} style={{background:"none",border:"none",color:C.red,fontSize:13,cursor:"pointer",fontFamily:"inherit",opacity:0.7}}>🗑 Clear everything &amp; start fresh</button></div>
+            </div>
+          </div>
+        )}
+        {view==="setup"&&!showStartup&&<SeasonSetupScreen onDone={handleSeasonStart} onLoadSaves={()=>setShowSaves(true)} onImportCode={(str)=>{const raw=dec(str.trim());if(!raw?.players||!raw?.name){notify("Invalid code","err");return;}const p=migrateSeason(raw);setSeason(p);save(p);setView("home");setLastSaved(fmtNow());notify("Session restored ✓");}}/>}
+        {view==="home"&&season&&!showStartup&&<SeasonHome season={season} players={season.players} onOpenTournament={()=>setView("tournament")} onNewTournament={()=>openM("newTournament")} onSquad={()=>setView("squad")} onSeasonStats={()=>setView("stats")}/>}
+        {view==="tournament"&&season&&activeTournament&&<TournamentView tournament={activeTournament} season={season} seasonPlayers={season.players} patchTournament={patchTournament} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onBack={(dest)=>setView(dest==="home"?"home":"tournament")} onArchive={()=>openM("archiveConfirm")}/>}
+        {view==="squad"&&season&&<SquadManager season={season} players={season.players} updatePlayer={updatePlayer} addPlayer={addPlayer} removePlayer={removePlayer} onBack={()=>setView("home")}/>}
+        {view==="stats"&&season&&<StatsView season={season} maxS={maxS} maxR={maxR} openM={openM} setView={setView}/>}
+      </main>
+      {modals.newTournament&&(
+        <ModalWrap title="New Tournament" onClose={()=>closeM("newTournament")}>
+          <Lbl mt={0}>Tournament Name</Lbl><Inp placeholder="e.g. Havant Festival" value={newT.name} onChange={e=>setNewT(t=>({...t,name:e.target.value}))}/>
+          <Lbl>Date</Lbl><Inp type="date" value={newT.date} onChange={e=>setNewT(t=>({...t,date:e.target.value}))}/>
+          <Lbl>Location (optional)</Lbl><Inp placeholder="e.g. Havant RFC" value={newT.location} onChange={e=>setNewT(t=>({...t,location:e.target.value}))}/>
+          <Lbl>Players on pitch per side (blank = default {season?.pitchSize})</Lbl><Inp type="number" style={{width:90}} min={3} max={15} placeholder={season?.pitchSize} value={newT.pitchSize} onChange={e=>setNewT(t=>({...t,pitchSize:e.target.value}))}/>
+          <Lbl>Number of teams</Lbl>
+          <div style={{display:"flex",gap:8,marginBottom:8}}>{[1,2,3,4].map(n=><button key={n} onClick={()=>setNewT(t=>({...t,numTeams:n}))} style={{padding:"7px 16px",borderRadius:5,border:`1px solid ${newT.numTeams===n?C.lime:"#333"}`,background:newT.numTeams===n?"#1a3a1a":"transparent",color:newT.numTeams===n?C.lime:C.soft,fontSize:14,cursor:"pointer",fontWeight:newT.numTeams===n?700:400}}>{n}</button>)}</div>
+          {newT.numTeams>1&&<><Lbl>Team Names</Lbl>{Array.from({length:newT.numTeams},(_,i)=><Inp key={i} style={{marginBottom:6}} placeholder={`Team ${i+1}`} value={newT.teamNames[i]||""} onChange={e=>{const names=[...newT.teamNames];names[i]=e.target.value;setNewT(t=>({...t,teamNames:names}));}}/>)}</>}
+          {activeTournament&&<div style={{background:"#3a2010",border:`1px solid ${C.amber}`,borderRadius:6,padding:"8px 12px",fontSize:12,color:"#ffe099",marginTop:12}}>⚠ End the current tournament first.</div>}
+          <PBtn onClick={startTournament} disabled={!!activeTournament}>Start Tournament →</PBtn>
+          {activeTournament&&<Ghost onClick={()=>{closeM("newTournament");openM("archiveConfirm");}}>End current tournament first</Ghost>}
+        </ModalWrap>
+      )}
+      {modals.archiveConfirm&&(
+        <ModalWrap title="End Tournament?" onClose={()=>closeM("archiveConfirm")}>
+          <p style={{fontSize:13,color:C.soft,marginBottom:16,lineHeight:1.6}}>This archives <strong style={{color:C.text}}>{activeTournament?.name}</strong> and adds all tournament halves to season totals.</p>
+          <div style={{display:"flex",gap:10,flexWrap:"wrap"}}><Ghost onClick={()=>closeM("archiveConfirm")}>Cancel</Ghost><PBtn style={{marginTop:0,flex:1}} color={C.amber} onClick={()=>{archiveTournament();setTimeout(()=>openM("newTournament"),300);}}>End &amp; Start New →</PBtn><PBtn style={{marginTop:0,flex:1}} onClick={archiveTournament}>End &amp; Finish</PBtn></div>
+        </ModalWrap>
+      )}
+      {modals.resetConfirm&&(
+        <ModalWrap title="Full Season Reset" onClose={()=>closeM("resetConfirm")}>
+          <p style={{fontSize:13,color:C.soft,marginBottom:16,lineHeight:1.6}}>Wipes all data. Core squad names kept. Cannot be undone.</p>
+          <div style={{display:"flex",gap:10}}><Ghost onClick={()=>closeM("resetConfirm")}>Cancel</Ghost><PBtn style={{marginTop:0,flex:1}} color={C.red} onClick={fullReset}>Reset Everything</PBtn></div>
+        </ModalWrap>
+      )}
+      {modals.startFreshConfirm&&(
+        <ModalWrap title="Start Fresh?" onClose={()=>closeM("startFreshConfirm")}>
+          <p style={{fontSize:13,color:C.soft,marginBottom:8,lineHeight:1.6}}>This will <strong style={{color:C.red}}>permanently delete all data</strong> — the current season, all tournaments, all named saves, and all game-time records.</p>
+          <p style={{fontSize:13,color:C.muted,marginBottom:20,lineHeight:1.6}}>Use <strong style={{color:C.amber}}>Export ↗</strong> or <strong style={{color:C.amber}}>💾 Saves</strong> first if you want a backup.</p>
+          <div style={{display:"flex",gap:10}}><Ghost onClick={()=>closeM("startFreshConfirm")} style={{flex:1,textAlign:"center"}}>Cancel</Ghost><PBtn style={{marginTop:0,flex:1}} color={C.red} onClick={startFresh}>🗑 Yes, delete everything</PBtn></div>
+        </ModalWrap>
+      )}
+      {modals.export&&(
+        <ModalWrap title="Export Session" onClose={()=>closeM("export")}>
+          <p style={{fontSize:13,color:C.soft,marginBottom:12,lineHeight:1.6}}>Copy and send to another coach.</p>
+          <textarea readOnly value={enc(season)} onFocus={e=>e.target.select()} style={{background:"#111",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:11,width:"100%",height:130,wordBreak:"break-all",outline:"none",resize:"none",fontFamily:"monospace"}}/>
+          <PBtn onClick={()=>{navigator.clipboard?.writeText(enc(season));notify("Copied ✓");}}>Copy to Clipboard</PBtn>
+        </ModalWrap>
+      )}
+      {modals.import&&(
+        <ModalWrap title="Import Session" onClose={()=>closeM("import")}>
+          <p style={{fontSize:13,color:C.soft,marginBottom:12,lineHeight:1.6}}>Paste a session code from another coach.</p>
+          <textarea value={importStr} onChange={e=>setImportStr(e.target.value)} placeholder="Paste code here…" style={{background:"#111",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:11,width:"100%",height:130,outline:"none",resize:"none",fontFamily:"monospace"}}/>
+          <PBtn style={{marginTop:12}} onClick={doImport}>Load Session</PBtn>
+        </ModalWrap>
+      )}
+      {showSaves&&<SavesManager season={season} onLoad={handleSavesLoad} onClose={()=>setShowSaves(false)} notify={notify}/>}
+      {season&&view!=="setup"&&!showStartup&&(
+        <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:150,background:"#1a1200",borderTop:"1px solid #5a3d00",padding:"7px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
+          <span style={{fontSize:11,color:"#c8a050"}}>✓ Auto-saved · Hit <strong>💾 Saves</strong> to create a named restore point before closing.</span>
+          <button onClick={()=>setShowSaves(true)} style={{padding:"4px 12px",background:C.amber,border:"none",borderRadius:4,color:"#111",fontSize:12,fontWeight:700,cursor:"pointer",flexShrink:0}}>💾 Save Now</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+try {
+  ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  window.__cbMounted = true;
+} catch (err) {
+  window.__cbFail("The Clipboard hit an error while starting", String(err && err.message ? err.message : err));
+}
+
+</script>
+
+<script>
+setTimeout(function () {
+  if (window.__cbMounted) return;
+  var missing = (typeof React === "undefined" || typeof ReactDOM === "undefined" || typeof Babel === "undefined");
+  if (missing) {
+    window.__cbFail(
+      "Could not load the app libraries",
+      "React and Babel are fetched from unpkg.com and did not arrive. This is normal in a file preview or offline. " +
+      "On the live GitHub Pages URL with a working connection it should load in a second or two."
+    );
+  } else {
+    window.__cbFail(
+      "The app libraries loaded but the app did not start",
+      "This points at an error in the app code rather than the network. Open the browser console for the exact line."
+    );
+  }
+}, 8000);
+</script>
+</body>
+</html>
