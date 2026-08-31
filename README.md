@@ -10,7 +10,7 @@ Squad selection, tournament management and fair game time tracking for a youth r
 
 | File | Purpose |
 |---|---|
-| `index.html` | The whole app (v4.0) — React via CDN, no build step |
+| `index.html` | The whole app (v4.1) — React via CDN, no build step |
 | `manifest.json` | Lets the app install to a phone home screen |
 | `icon-192.png` / `icon-512.png` | App icons |
 
@@ -51,9 +51,9 @@ team auto-assign, tournament-scoped fairness, scoring and try scorers.
 Next:
 
 - [x] Player profiles, position eligibility, competence ratings, development focus
-- [ ] Training attendance and session records
-- [ ] Coach assessments over time — attitude and performance, dated entries
-- [ ] Player combinations — who plays well together, who doesn't
+- [x] Training attendance, season timeline, attendance import codes
+- [x] Behaviour and attitude ratings (TREDS), dated assessment snapshots
+- [x] Player combinations — stored once, shown on both profiles
 - [ ] Read-only sharing for other coaches and parents
 
 ## Positions (12 a side)
@@ -73,6 +73,40 @@ Front row (2 props + hooker) and second row (2 locks) make the five forwards.
 
 ## Version history
 
+- **v4.1** — behaviour and attitude ratings using the RFU core values (TREDS),
+  training sessions on a season timeline, attendance register and import codes,
+  player combinations, dated assessment snapshots, overall star average removed
 - **v4.0** — player profiles, position eligibility, 1–5 star competence ratings,
   development focus areas, coach notes, position cover summary
 - **v3.1w** — first hosted build: multi-team festivals, roster, scoring
+
+## Attendance import codes
+
+Rather than tapping 25 names after every session, an attendance register can be
+imported as a code. The code is base64 of this JSON:
+
+```json
+{
+  "k": "attendance",
+  "date": "2026-09-07",
+  "title": "Tuesday training",
+  "location": "Down Grange",
+  "present": ["Jack Meyer", "Theo", "Roo"],
+  "absent": ["Zach"]
+}
+```
+
+Names are matched against the squad case-insensitively, falling back to a unique
+first-name or prefix match. The app shows a preview of what matched, what didn't,
+and who wasn't mentioned, before anything is written. Nothing is applied until
+that preview is confirmed.
+
+Anyone not mentioned in the code is left unset rather than marked absent.
+
+## Assessment approach
+
+There is deliberately **no overall rating** for a player. Skills are compared
+against that player's own profile ("strongest", "most room to grow"), never
+against other children. Behaviour uses England Rugby's TREDS core values —
+teamwork, respect, enjoyment, discipline, sportsmanship — alongside four
+coaching behaviours: listening, coachability, effort, and influence on team-mates.

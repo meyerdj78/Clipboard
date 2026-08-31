@@ -106,6 +106,7 @@ const migratePlayer=p=>({
   positions:Array.isArray(p.positions)?p.positions:[],
   primary:p.primary??null,
   competence:(p.competence&&typeof p.competence==="object")?p.competence:{},
+  behaviour:(p.behaviour&&typeof p.behaviour==="object")?p.behaviour:{},
   focus:Array.isArray(p.focus)?p.focus:[],
   notes:typeof p.notes==="string"?p.notes:"",
   assessments:Array.isArray(p.assessments)?p.assessments:[],
@@ -114,9 +115,54 @@ const migratePlayer=p=>({
 });
 const newPlayer=(name,isGuest=false)=>migratePlayer({id:uid(),name,seasonHalves:0,recentHalves:0,available:true,ill:false,isGuest});
 
-const blankSeason=(name,pitchSize,playerNames)=>({id:uid(),name,pitchSize,players:playerNames.map(n=>newPlayer(n,false)),tournaments:[],activeTournament:null});
+const BEHAVIOURS=[
+  {key:"listening",label:"Listening & focus",group:"Coaching",low:"Drifts off",high:"Locked in"},
+  {key:"coachable",label:"Takes on coaching",group:"Coaching",low:"Resists feedback",high:"Acts on it straight away"},
+  {key:"effort",label:"Effort & resilience",group:"Coaching",low:"Gives up when it's hard",high:"Keeps going regardless"},
+  {key:"influence",label:"Influence on team-mates",group:"Coaching",low:"Unsettles those around them",high:"Lifts those around them"},
+  {key:"teamwork",label:"Teamwork",group:"Core Values (TREDS)",low:"Plays for themselves",high:"Plays for the team"},
+  {key:"respect",label:"Respect",group:"Core Values (TREDS)",low:"Needs reminding",high:"Referee, opposition, team-mates"},
+  {key:"enjoyment",label:"Enjoyment",group:"Core Values (TREDS)",low:"Reluctant to be there",high:"Loves it"},
+  {key:"discipline",label:"Discipline",group:"Core Values (TREDS)",low:"Loses control",high:"Self-controlled under pressure"},
+  {key:"sportsmanship",label:"Sportsmanship",group:"Core Values (TREDS)",low:"Struggles win or lose",high:"Gracious either way"},
+];
+
+const ATT_STATES=[
+  {key:"present",label:"Present",short:"P",col:C.lime},
+  {key:"late",label:"Late",short:"L",col:C.amber},
+  {key:"excused",label:"Excused",short:"E",col:C.blue},
+  {key:"absent",label:"Absent",short:"A",col:C.red},
+];
+const attCol=k=>ATT_STATES.find(x=>x.key===k)?.col??"#333";
+
+const trainingEvents=s=>(s?.events||[]).filter(e=>e.type==="training");
+const attStats=(events,pid)=>{
+  let attended=0,counted=0;
+  events.forEach(e=>{
+    const st=e.attendance?.[pid];
+    if(!st||st==="excused")return;
+    counted++;
+    if(st==="present"||st==="late")attended++;
+  });
+  return{attended,counted,rate:counted?Math.round(attended/counted*100):null};
+};
+
+const combosFor=(season,pid)=>(season?.combos||[]).filter(c=>c.a===pid||c.b===pid)
+  .map(c=>({...c,otherId:c.a===pid?c.b:c.a}));
+
+const normName=t=>String(t||"").toLowerCase().replace(/[^a-z\s]/g,"").replace(/\s+/g," ").trim();
+const matchSquad=(rawNames,players)=>rawNames.map(raw=>{
+  const q=normName(raw);
+  if(!q)return{raw,player:null};
+  let hit=players.find(x=>normName(x.name)===q);
+  if(!hit){const c=players.filter(x=>normName(x.name).split(" ")[0]===q);if(c.length===1)hit=c[0];}
+  if(!hit){const c=players.filter(x=>normName(x.name).startsWith(q));if(c.length===1)hit=c[0];}
+  return{raw,player:hit||null};
+});
+
+const blankSeason=(name,pitchSize,playerNames)=>({id:uid(),name,pitchSize,players:playerNames.map(n=>newPlayer(n,false)),tournaments:[],activeTournament:null,events:[],combos:[]});
 const blankTournament=(name,date,location,pitchSize,numTeams,teamNames,squadPlayers)=>({id:uid(),name,date,location,pitchSize,numTeams,status:"roster",teams:Array.from({length:numTeams},(_,i)=>({id:uid(),name:teamNames[i]||`Team ${i+1}`,matches:[]})),roster:squadPlayers.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId:null,tournamentHalves:0}))});
-const migrateSeason=(s)=>{if(!s)return s;const s2={...s,players:(s.players||[]).map(migratePlayer)};if(!s2.activeTournament)return s2;const t=s2.activeTournament;if(t.teams&&t.roster)return s2;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s2.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s2,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
+const migrateSeason=(s)=>{if(!s)return s;const s2={...s,players:(s.players||[]).map(migratePlayer),events:Array.isArray(s.events)?s.events:[],combos:Array.isArray(s.combos)?s.combos:[]};if(!s2.activeTournament)return s2;const t=s2.activeTournament;if(t.teams&&t.roster)return s2;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s2.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s2,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
 
 const Lbl=({children,mt=12})=><div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:5,marginTop:mt,fontFamily:"'Barlow Condensed',sans-serif"}}>{children}</div>;
 const Inp=({style,...p})=><input style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:16,width:"100%",outline:"none",fontFamily:"inherit",boxSizing:"border-box",...style}} {...p}/>;
@@ -553,13 +599,13 @@ function SeasonSetupScreen({onDone,onLoadSaves,onImportCode}){
   );
 }
 
-function SeasonHome({season,players,onOpenTournament,onNewTournament,onSquad,onPlayers,onSeasonStats}){
+function SeasonHome({season,players,onOpenTournament,onNewTournament,onSquad,onPlayers,onTimeline,onSeasonStats}){
   const maxS=Math.max(...players.map(p=>p.seasonHalves),1);
   const maxR=Math.max(...players.map(p=>p.recentHalves??0),1);
   return(
     <>
       <div style={{marginBottom:20}}><h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>{season.name}</h2><div style={{fontSize:12,color:C.muted,marginTop:2}}>{players.length} players · {season.tournaments.length} tournament{season.tournaments.length!==1?"s":""} archived</div></div>
-      <div style={{display:"flex",gap:10,marginBottom:22,flexWrap:"wrap"}}><PBtn style={{width:"auto",marginTop:0,padding:"10px 20px"}} onClick={onNewTournament}>+ New Tournament</PBtn><Ghost onClick={onSquad}>Manage Squad</Ghost><Ghost onClick={onPlayers}>Players &amp; Positions</Ghost><Ghost onClick={onSeasonStats}>Season Stats</Ghost></div>
+      <div style={{display:"flex",gap:10,marginBottom:22,flexWrap:"wrap"}}><PBtn style={{width:"auto",marginTop:0,padding:"10px 20px"}} onClick={onNewTournament}>+ New Tournament</PBtn><Ghost onClick={onSquad}>Manage Squad</Ghost><Ghost onClick={onPlayers}>Players &amp; Positions</Ghost><Ghost onClick={onTimeline}>Training &amp; Timeline</Ghost><Ghost onClick={onSeasonStats}>Season Stats</Ghost></div>
       {season.activeTournament&&<><SHead>Active Tournament</SHead><div style={{background:C.card,border:`1px solid ${C.lime}`,borderRadius:10,padding:18,marginBottom:20,cursor:"pointer"}} onClick={onOpenTournament}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime}}>{season.activeTournament.name}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{season.activeTournament.date} · {season.activeTournament.teams?.length||1} team{(season.activeTournament.teams?.length||1)!==1?"s":""} · {season.activeTournament.teams?.reduce((a,t)=>a+t.matches.length,0)||0} matches</div></div><span style={{color:C.lime,fontSize:20}}>›</span></div></div></>}
       {season.tournaments.length>0&&<><SHead>Past Tournaments</SHead><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10,marginBottom:22}}>{season.tournaments.map(t=><div key={t.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:14}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:C.amber,marginBottom:3}}>{t.name}</div><div style={{fontSize:12,color:C.muted}}>{t.date} · {t.teams?.length||1} team{(t.teams?.length||1)!==1?"s":""}</div></div>)}</div></>}
       <SHead>Season Game Time</SHead>
@@ -628,8 +674,65 @@ function Stars({value,onSet,size=22}){
   );
 }
 
-function PlayerProfile({player,players,updatePlayer,onBack,onOpenPlayer,notify}){
+function Scale({value,onSet,low,high}){
+  return(
+    <div>
+      <div style={{display:"flex",gap:4}}>
+        {[1,2,3,4,5].map(n=>(
+          <button key={n} onClick={()=>onSet(n)}
+            style={{flex:1,height:30,borderRadius:4,cursor:"pointer",border:`1px solid ${n<=value?C.blue:"#333"}`,
+              background:n<=value?C.blue:"#212121",color:n<=value?"#fff":"#555",fontSize:12,fontFamily:"inherit"}}>{n}</button>
+        ))}
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:4,gap:8}}>
+        <span style={{fontSize:10,color:"#4a4a4a"}}>{low}</span>
+        <span style={{fontSize:10,color:"#4a4a4a",textAlign:"right"}}>{high}</span>
+      </div>
+    </div>
+  );
+}
+
+function ComboPicker({player,players,existing,onAdd,onClose}){
+  const[type,setType]=useState("good");
+  const[note,setNote]=useState("");
+  const[sel,setSel]=useState([]);
+  const linked=new Set(existing.map(c=>c.otherId));
+  const pool=players.filter(x=>x.id!==player.id&&!linked.has(x.id));
+  const tog=id=>setSel(v=>v.includes(id)?v.filter(x=>x!==id):[...v,id]);
+  return(
+    <ModalWrap title={`Link players with ${player.name}`} onClose={onClose} wide>
+      <Lbl mt={0}>Type of pairing</Lbl>
+      <div style={{display:"flex",gap:8,marginBottom:6}}>
+        <button onClick={()=>setType("good")} style={{flex:1,padding:"10px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:14,fontWeight:700,border:`1px solid ${type==="good"?C.grass:"#333"}`,background:type==="good"?C.grass:"#212121",color:type==="good"?"#fff":C.soft}}>🤝 Works well together</button>
+        <button onClick={()=>setType("poor")} style={{flex:1,padding:"10px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:14,fontWeight:700,border:`1px solid ${type==="poor"?C.red:"#333"}`,background:type==="poor"?C.red:"#212121",color:type==="poor"?"#fff":C.soft}}>⚠ Better apart</button>
+      </div>
+      <Lbl>Select one or more players</Lbl>
+      {pool.length===0&&<p style={{fontSize:13,color:C.muted}}>Everyone else is already linked.</p>}
+      <div style={{display:"flex",flexWrap:"wrap",gap:6,maxHeight:230,overflowY:"auto"}}>
+        {pool.map(x=>(
+          <button key={x.id} onClick={()=>tog(x.id)}
+            style={{padding:"7px 13px",borderRadius:5,fontSize:14,cursor:"pointer",fontFamily:"inherit",
+              background:sel.includes(x.id)?C.amber:"#2a2a2a",color:sel.includes(x.id)?"#111":C.soft,
+              border:`1px solid ${sel.includes(x.id)?C.amber:"#333"}`}}>{x.name}</button>
+        ))}
+      </div>
+      <Lbl>Note (optional)</Lbl>
+      <Inp placeholder="e.g. good communication at 9 and 10" value={note} onChange={e=>setNote(e.target.value)}/>
+      <div style={{display:"flex",gap:10,marginTop:16}}>
+        <Ghost onClick={onClose}>Cancel</Ghost>
+        <PBtn style={{marginTop:0,flex:1}} disabled={sel.length===0} color={type==="good"?C.grass:C.red}
+          onClick={()=>{sel.forEach(id=>onAdd(player.id,id,type,note.trim()));onClose();}}>
+          {sel.length===0?"Select at least one player":`Link ${sel.length} player${sel.length>1?"s":""} →`}
+        </PBtn>
+      </div>
+    </ModalWrap>
+  );
+}
+
+function PlayerProfile({player,players,season,updatePlayer,addCombo,removeCombo,onBack,onOpenPlayer,notify}){
   const[focusTxt,setFocusTxt]=useState("");
+  const[picker,setPicker]=useState(false);
+  const[openSnap,setOpenSnap]=useState(null);
   const p=player;
 
   const cyclePos=k=>{
@@ -639,36 +742,38 @@ function PlayerProfile({player,players,updatePlayer,onBack,onOpenPlayer,notify})
     else {updatePlayer(p.id,{positions:p.positions.filter(x=>x!==k),primary:null});}
   };
   const setSkill=(k,v)=>updatePlayer(p.id,{competence:{...p.competence,[k]:p.competence?.[k]===v?0:v}});
+  const setBeh=(k,v)=>updatePlayer(p.id,{behaviour:{...p.behaviour,[k]:p.behaviour?.[k]===v?0:v}});
   const addFocus=()=>{
     const t=focusTxt.trim();
     if(!t)return;
     if(p.focus.includes(t)){notify("Already on the list","err");setFocusTxt("");return;}
     updatePlayer(p.id,{focus:[...p.focus,t]});setFocusTxt("");
   };
-  const rmFocus=t=>updatePlayer(p.id,{focus:p.focus.filter(x=>x!==t)});
+  const snapshot=()=>{
+    updatePlayer(p.id,{assessments:[{id:uid(),date:today(),competence:{...p.competence},behaviour:{...p.behaviour}},...(p.assessments||[])]});
+    notify("Snapshot saved ✓");
+  };
 
+  const rated=SKILLS.map(sk=>({...sk,v:p.competence?.[sk.key]||0})).filter(x=>x.v>0);
+  const strengths=rated.length>=4?[...rated].sort((a,b)=>b.v-a.v).filter((x,_,arr)=>x.v===arr[0].v).slice(0,3):[];
+  const working=rated.length>=4?[...rated].sort((a,b)=>a.v-b.v).filter((x,_,arr)=>x.v===arr[0].v).slice(0,3):[];
+  const combos=combosFor(season,p.id);
+  const good=combos.filter(c=>c.type==="good"), poor=combos.filter(c=>c.type==="poor");
+  const pname=id=>players.find(x=>x.id===id)?.name??"?";
   const groups=[...new Set(POSITIONS.map(x=>x.group))];
-  const avg=avgSkill(p);
+  const behGroups=[...new Set(BEHAVIOURS.map(x=>x.group))];
+  const att=attStats(trainingEvents(season),p.id);
 
   return(
     <>
       <Breadcrumb crumbs={[{label:"Players",onClick:onBack},{label:p.name}]}/>
 
       <Card>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,flexWrap:"wrap"}}>
-          <div>
-            <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>{p.name}{p.isGuest?" 👤":""}</h2>
-            <div style={{fontSize:12,color:C.muted,marginTop:3}}>
-              {p.seasonHalves} halves this season
-              {p.primary?` · Primary: ${posLabel(p.primary)}`:""}
-            </div>
-          </div>
-          {avg>0&&(
-            <div style={{textAlign:"right"}}>
-              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900,color:C.amber,lineHeight:1}}>{avg.toFixed(1)}</div>
-              <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>Avg rating</div>
-            </div>
-          )}
+        <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>{p.name}{p.isGuest?" 👤":""}</h2>
+        <div style={{fontSize:12,color:C.muted,marginTop:4,lineHeight:1.7}}>
+          {p.seasonHalves} halves this season
+          {p.primary?` · Primary: ${posLabel(p.primary)}`:""}
+          {att.rate!==null?` · Training ${att.rate}% (${att.attended}/${att.counted})`:" · No training logged"}
         </div>
       </Card>
 
@@ -682,13 +787,12 @@ function PlayerProfile({player,players,updatePlayer,onBack,onOpenPlayer,notify})
             <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>{g}</div>
             <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
               {POSITIONS.filter(x=>x.group===g).map(x=>{
-                const isPrimary=p.primary===x.key;
-                const can=p.positions.includes(x.key);
-                const bg=isPrimary?C.amber:can?C.grass:"#2a2a2a";
-                const col=isPrimary?"#111":can?"#fff":C.soft;
+                const isPrimary=p.primary===x.key, can=p.positions.includes(x.key);
                 return(
                   <button key={x.key} onClick={()=>cyclePos(x.key)}
-                    style={{padding:"8px 14px",borderRadius:6,fontSize:14,cursor:"pointer",fontFamily:"inherit",background:bg,color:col,border:`1px solid ${isPrimary?C.amber:can?C.grass:"#333"}`,fontWeight:isPrimary?700:400}}>
+                    style={{padding:"8px 14px",borderRadius:6,fontSize:14,cursor:"pointer",fontFamily:"inherit",
+                      background:isPrimary?C.amber:can?C.grass:"#2a2a2a",color:isPrimary?"#111":can?"#fff":C.soft,
+                      border:`1px solid ${isPrimary?C.amber:can?C.grass:"#333"}`,fontWeight:isPrimary?700:400}}>
                     {x.label}{isPrimary?" ★":""}
                   </button>
                 );
@@ -698,7 +802,7 @@ function PlayerProfile({player,players,updatePlayer,onBack,onOpenPlayer,notify})
         ))}
       </Card>
 
-      <SHead>Competence</SHead>
+      <SHead>Skills</SHead>
       <Card>
         {SKILLS.map(sk=>(
           <div key={sk.key} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
@@ -706,15 +810,69 @@ function PlayerProfile({player,players,updatePlayer,onBack,onOpenPlayer,notify})
             <Stars value={p.competence?.[sk.key]||0} onSet={v=>setSkill(sk.key,v)}/>
           </div>
         ))}
-        <p style={{fontSize:11,color:"#444",marginTop:10}}>Tap the same star again to clear a rating.</p>
+        {(strengths.length>0||working.length>0)&&(
+          <div style={{marginTop:14,background:"#161616",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>Relative to their own profile</div>
+            {strengths.length>0&&<div style={{fontSize:13,marginBottom:4}}><span style={{color:C.lime}}>Strongest:</span> {strengths.map(x=>x.label).join(", ")}</div>}
+            {working.length>0&&<div style={{fontSize:13}}><span style={{color:C.amber}}>Most room to grow:</span> {working.map(x=>x.label).join(", ")}</div>}
+          </div>
+        )}
+        <p style={{fontSize:11,color:"#444",marginTop:10}}>Tap the same star again to clear a rating. Deliberately no overall score — these compare a player against themselves, not against each other.</p>
+      </Card>
+
+      <SHead>Behaviour &amp; Attitude</SHead>
+      <Card>
+        {behGroups.map(g=>(
+          <div key={g} style={{marginBottom:14}}>
+            <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:8,fontFamily:"'Barlow Condensed',sans-serif"}}>{g}</div>
+            {BEHAVIOURS.filter(x=>x.group===g).map(bh=>(
+              <div key={bh.key} style={{marginBottom:12}}>
+                <div style={{fontSize:14,marginBottom:5}}>{bh.label}</div>
+                <Scale value={p.behaviour?.[bh.key]||0} onSet={v=>setBeh(bh.key,v)} low={bh.low} high={bh.high}/>
+              </div>
+            ))}
+          </div>
+        ))}
+        <p style={{fontSize:11,color:"#444"}}>TREDS are England Rugby's core values. Tap the same number again to clear.</p>
+      </Card>
+
+      <SHead>Combinations</SHead>
+      <Card>
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:11,color:C.lime,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>🤝 Works well with</div>
+          {good.length===0&&<p style={{fontSize:13,color:C.muted}}>None recorded.</p>}
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {good.map(c=>(
+              <div key={c.id} style={{display:"inline-flex",alignItems:"center",gap:6,background:"#1a3d1a",border:`1px solid ${C.grass}`,borderRadius:5,padding:"5px 10px",fontSize:13,color:C.lime}}>
+                <span onClick={()=>onOpenPlayer(c.otherId)} style={{cursor:"pointer"}}>{pname(c.otherId)}</span>
+                {c.note&&<span style={{fontSize:11,color:C.soft,opacity:0.8}}>— {c.note}</span>}
+                <button onClick={()=>removeCombo(c.id)} style={{background:"none",border:"none",color:"#5a8a5a",cursor:"pointer",fontSize:12}}>✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div style={{marginBottom:12}}>
+          <div style={{fontSize:11,color:C.red,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>⚠ Better apart</div>
+          {poor.length===0&&<p style={{fontSize:13,color:C.muted}}>None recorded.</p>}
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {poor.map(c=>(
+              <div key={c.id} style={{display:"inline-flex",alignItems:"center",gap:6,background:"#3a1010",border:`1px solid ${C.red}`,borderRadius:5,padding:"5px 10px",fontSize:13,color:"#ff9999"}}>
+                <span onClick={()=>onOpenPlayer(c.otherId)} style={{cursor:"pointer"}}>{pname(c.otherId)}</span>
+                {c.note&&<span style={{fontSize:11,color:C.soft,opacity:0.8}}>— {c.note}</span>}
+                <button onClick={()=>removeCombo(c.id)} style={{background:"none",border:"none",color:"#8a5a5a",cursor:"pointer",fontSize:12}}>✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+        <Ghost onClick={()=>setPicker(true)} style={{width:"100%",textAlign:"center"}}>+ Link players</Ghost>
+        <p style={{fontSize:11,color:"#444",marginTop:8}}>Pairings are stored once and appear on both players' profiles.</p>
       </Card>
 
       <SHead>Development Focus</SHead>
       <Card>
         <div style={{display:"flex",gap:6,marginBottom:12}}>
           <Inp placeholder="e.g. Tackle technique — head position" value={focusTxt}
-            onChange={e=>setFocusTxt(e.target.value)}
-            onKeyDown={e=>{if(e.key==="Enter")addFocus();}}/>
+            onChange={e=>setFocusTxt(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addFocus();}}/>
           <button onClick={addFocus} style={{padding:"8px 14px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Add</button>
         </div>
         {p.focus.length===0&&<p style={{fontSize:13,color:C.muted}}>Nothing recorded yet.</p>}
@@ -722,7 +880,7 @@ function PlayerProfile({player,players,updatePlayer,onBack,onOpenPlayer,notify})
           {p.focus.map(t=>(
             <div key={t} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,background:"#252525",border:"1px solid #333",borderRadius:6,padding:"8px 12px"}}>
               <span style={{fontSize:13,color:C.text}}>🎯 {t}</span>
-              <button onClick={()=>rmFocus(t)} style={{background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button>
+              <button onClick={()=>updatePlayer(p.id,{focus:p.focus.filter(x=>x!==t)})} style={{background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button>
             </div>
           ))}
         </div>
@@ -735,23 +893,47 @@ function PlayerProfile({player,players,updatePlayer,onBack,onOpenPlayer,notify})
           style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"10px 12px",fontSize:16,width:"100%",height:110,outline:"none",resize:"vertical",fontFamily:"inherit",boxSizing:"border-box",lineHeight:1.5}}/>
       </Card>
 
+      <SHead>Assessment History</SHead>
+      <Card>
+        <p style={{fontSize:12,color:C.muted,marginBottom:10,lineHeight:1.6}}>Save a dated snapshot to see how the picture changes across the season. Current ratings stay editable.</p>
+        <Ghost onClick={snapshot} style={{width:"100%",textAlign:"center",marginBottom:10}}>📌 Save snapshot for {today()}</Ghost>
+        {(p.assessments||[]).length===0&&<p style={{fontSize:13,color:C.muted}}>No snapshots yet.</p>}
+        {(p.assessments||[]).map(a=>(
+          <div key={a.id} style={{borderBottom:`1px solid ${C.border}`,padding:"9px 0"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+              <button onClick={()=>setOpenSnap(openSnap===a.id?null:a.id)} style={{background:"none",border:"none",color:C.text,fontSize:14,cursor:"pointer",fontFamily:"inherit",padding:0}}>
+                {openSnap===a.id?"▾":"▸"} {a.date}
+              </button>
+              <button onClick={()=>updatePlayer(p.id,{assessments:p.assessments.filter(x=>x.id!==a.id)})} style={{background:"none",border:"none",color:"#555",cursor:"pointer",fontSize:12}}>Delete</button>
+            </div>
+            {openSnap===a.id&&(
+              <div style={{marginTop:8,fontSize:12,color:C.soft,lineHeight:1.8}}>
+                {SKILLS.filter(sk=>a.competence?.[sk.key]>0).map(sk=>(
+                  <div key={sk.key}>{sk.label}: <span style={{color:C.amber}}>{"★".repeat(a.competence[sk.key])}</span></div>
+                ))}
+                {BEHAVIOURS.filter(bh=>a.behaviour?.[bh.key]>0).map(bh=>(
+                  <div key={bh.key}>{bh.label}: <span style={{color:C.blue}}>{a.behaviour[bh.key]}/5</span></div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </Card>
+
       <Ghost onClick={onBack} style={{width:"100%",textAlign:"center"}}>← Back to Players</Ghost>
+      {picker&&<ComboPicker player={p} players={players} existing={combos} onAdd={addCombo} onClose={()=>setPicker(false)}/>}
     </>
   );
 }
 
 function PlayersScreen({season,players,onOpenPlayer,onBack}){
   const[sortBy,setSortBy]=useState("name");
-  const cover=FORMATION.map(f=>({
-    ...f,
-    label:posLabel(f.key),
-    able:players.filter(p=>!p.isGuest&&p.positions.includes(f.key)).length,
-  }));
+  const evs=trainingEvents(season);
+  const cover=FORMATION.map(f=>({...f,label:posLabel(f.key),able:players.filter(p=>!p.isGuest&&p.positions.includes(f.key)).length}));
   const unset=players.filter(p=>p.positions.length===0).length;
-
   const sorted=[...players].sort((a,b)=>{
-    if(sortBy==="rating")return avgSkill(b)-avgSkill(a);
     if(sortBy==="halves")return b.seasonHalves-a.seasonHalves;
+    if(sortBy==="attendance")return (attStats(evs,b.id).rate??-1)-(attStats(evs,a.id).rate??-1);
     return a.name.localeCompare(b.name);
   });
 
@@ -767,8 +949,7 @@ function PlayersScreen({season,players,onOpenPlayer,onBack}){
       <Card>
         <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(132px,1fr))",gap:8}}>
           {cover.map(c=>{
-            const short=c.able<c.count;
-            const thin=!short&&c.able<c.count+2;
+            const short=c.able<c.count, thin=!short&&c.able<c.count+2;
             const col=short?C.red:thin?C.amber:C.lime;
             return(
               <div key={c.key} style={{background:"#161616",border:`1px solid ${short?C.red:C.border}`,borderRadius:8,padding:"10px 12px"}}>
@@ -779,34 +960,35 @@ function PlayersScreen({season,players,onOpenPlayer,onBack}){
             );
           })}
         </div>
-        <p style={{fontSize:11,color:"#444",marginTop:10}}>Red means you have fewer players able to cover the position than you need on the pitch.</p>
+        <p style={{fontSize:11,color:"#444",marginTop:10}}>Red means fewer players able to cover the position than you need on the pitch.</p>
       </Card>
 
       <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
         <span style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,fontFamily:"'Barlow Condensed',sans-serif"}}>Sort</span>
         <Pill active={sortBy==="name"} onClick={()=>setSortBy("name")}>Name</Pill>
-        <Pill active={sortBy==="rating"} onClick={()=>setSortBy("rating")}>Rating</Pill>
         <Pill active={sortBy==="halves"} onClick={()=>setSortBy("halves")}>Game time</Pill>
+        <Pill active={sortBy==="attendance"} onClick={()=>setSortBy("attendance")}>Attendance</Pill>
       </div>
 
       <Card>
         {sorted.map(p=>{
-          const avg=avgSkill(p);
+          const att=attStats(evs,p.id);
           return(
             <div key={p.id} onClick={()=>onOpenPlayer(p.id)}
               style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"11px 0",borderBottom:`1px solid ${C.border}`,cursor:"pointer"}}>
               <div style={{minWidth:0,flex:1}}>
                 <div style={{fontSize:15,fontWeight:500,color:C.text}}>{p.name}{p.isGuest?" 👤":""}</div>
-                <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:5}}>
+                <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:5,alignItems:"center"}}>
                   {p.positions.length===0&&<span style={{fontSize:11,color:"#555"}}>No positions set</span>}
                   {p.positions.map(k=>(
                     <span key={k} style={{background:p.primary===k?C.amber:"#252525",color:p.primary===k?"#111":C.soft,border:`1px solid ${p.primary===k?C.amber:"#333"}`,borderRadius:4,padding:"2px 7px",fontSize:11,fontWeight:p.primary===k?700:400}}>{posShort(k)}</span>
                   ))}
                   {p.focus.length>0&&<span style={{fontSize:11,color:C.blue,marginLeft:2}}>🎯 {p.focus.length}</span>}
+                  {combosFor(season,p.id).length>0&&<span style={{fontSize:11,color:C.soft,marginLeft:2}}>🔗 {combosFor(season,p.id).length}</span>}
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
-                <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,color:avg>0?C.amber:"#3a3a3a"}}>{avg>0?`★ ${avg.toFixed(1)}`:"—"}</span>
+                {att.rate!==null&&<span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:14,fontWeight:700,color:att.rate>=80?C.lime:att.rate>=50?C.amber:C.red}}>{att.rate}%</span>}
                 <span style={{color:C.muted,fontSize:18}}>›</span>
               </div>
             </div>
@@ -816,6 +998,213 @@ function PlayersScreen({season,players,onOpenPlayer,onBack}){
     </>
   );
 }
+
+function SessionScreen({event,players,patchEvent,deleteEvent,onBack,notify}){
+  const[confirmDel,setConfirmDel]=useState(false);
+  const att=event.attendance||{};
+  const setAtt=(pid,st)=>patchEvent(event.id,{attendance:{...att,[pid]:att[pid]===st?undefined:st}});
+  const setAll=st=>{const a={};players.forEach(p=>{a[p.id]=st;});patchEvent(event.id,{attendance:a});};
+  const counts=ATT_STATES.map(s=>({...s,n:players.filter(p=>att[p.id]===s.key).length}));
+  const unset=players.filter(p=>!att[p.id]).length;
+
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:"Timeline",onClick:onBack},{label:event.title||"Training"}]}/>
+      <Card>
+        <Lbl mt={0}>Title</Lbl>
+        <Inp value={event.title} onChange={e=>patchEvent(event.id,{title:e.target.value})}/>
+        <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+          <div style={{flex:1,minWidth:140}}><Lbl>Date</Lbl><Inp type="date" value={event.date} onChange={e=>patchEvent(event.id,{date:e.target.value})}/></div>
+          <div style={{flex:1,minWidth:140}}><Lbl>Location</Lbl><Inp placeholder="optional" value={event.location||""} onChange={e=>patchEvent(event.id,{location:e.target.value})}/></div>
+        </div>
+        <Lbl>Session notes</Lbl>
+        <textarea value={event.notes||""} onChange={e=>patchEvent(event.id,{notes:e.target.value})}
+          placeholder="What you worked on, anything worth remembering…"
+          style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"10px 12px",fontSize:16,width:"100%",height:80,outline:"none",resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}}/>
+      </Card>
+
+      <SHead>Attendance</SHead>
+      <Card>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}}>
+          {counts.map(c=><div key={c.key} style={{textAlign:"center",minWidth:52}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:900,color:c.col}}>{c.n}</div><div style={{fontSize:10,color:C.muted}}>{c.label}</div></div>)}
+          {unset>0&&<div style={{textAlign:"center",minWidth:52}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:900,color:"#444"}}>{unset}</div><div style={{fontSize:10,color:C.muted}}>Not set</div></div>}
+        </div>
+        <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
+          <Ghost onClick={()=>setAll("present")}>Mark all present</Ghost>
+          <Ghost onClick={()=>setAll("absent")}>Mark all absent</Ghost>
+        </div>
+        {[...players].sort((a,b)=>a.name.localeCompare(b.name)).map(p=>(
+          <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:"7px 0",borderBottom:`1px solid ${C.border}`,flexWrap:"wrap"}}>
+            <span style={{fontSize:14,minWidth:110,flex:1}}>{p.name}</span>
+            <div style={{display:"flex",gap:4}}>
+              {ATT_STATES.map(st=>(
+                <button key={st.key} onClick={()=>setAtt(p.id,st.key)} title={st.label}
+                  style={{width:38,height:32,borderRadius:5,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:700,
+                    background:att[p.id]===st.key?st.col:"#212121",color:att[p.id]===st.key?"#111":"#555",
+                    border:`1px solid ${att[p.id]===st.key?st.col:"#333"}`}}>{st.short}</button>
+              ))}
+            </div>
+          </div>
+        ))}
+        <p style={{fontSize:11,color:"#444",marginTop:10}}>P present · L late · E excused (not counted) · A absent. Tap again to unset.</p>
+      </Card>
+
+      {confirmDel
+        ? <Card style={{border:`1px solid ${C.red}`}}>
+            <p style={{fontSize:13,color:C.soft,marginBottom:12}}>Delete this session and its attendance? Cannot be undone.</p>
+            <div style={{display:"flex",gap:10}}>
+              <Ghost onClick={()=>setConfirmDel(false)}>Cancel</Ghost>
+              <PBtn style={{marginTop:0,flex:1}} color={C.red} onClick={()=>{deleteEvent(event.id);onBack();notify("Session deleted");}}>Delete session</PBtn>
+            </div>
+          </Card>
+        : <Ghost onClick={()=>setConfirmDel(true)} style={{color:C.red,borderColor:C.red}}>Delete this session</Ghost>}
+    </>
+  );
+}
+
+function AttendanceImport({season,players,onApply,onClose,notify}){
+  const[raw,setRaw]=useState("");
+  const[parsed,setParsed]=useState(null);
+
+  const decode=()=>{
+    const d=dec(raw.trim());
+    if(!d||d.k!=="attendance"||!Array.isArray(d.present)){notify("Not a valid attendance code","err");return;}
+    const present=matchSquad(d.present,players);
+    const absent=matchSquad(d.absent||[],players);
+    setParsed({date:d.date||today(),title:d.title||"Training",location:d.location||"",present,absent});
+  };
+
+  const unmatched=parsed?[...parsed.present,...parsed.absent].filter(x=>!x.player):[];
+  const matchedIds=parsed?new Set([...parsed.present,...parsed.absent].filter(x=>x.player).map(x=>x.player.id)):new Set();
+  const unmentioned=parsed?players.filter(p=>!matchedIds.has(p.id)):[];
+
+  return(
+    <ModalWrap title="Import Attendance" onClose={onClose} wide>
+      {!parsed?(
+        <>
+          <p style={{fontSize:13,color:C.soft,marginBottom:12,lineHeight:1.6}}>
+            Paste an attendance code. Nothing is applied until you've seen the preview.
+          </p>
+          <textarea value={raw} onChange={e=>setRaw(e.target.value)} placeholder="Paste attendance code…"
+            style={{background:"#111",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:11,width:"100%",height:120,outline:"none",resize:"none",fontFamily:"monospace",boxSizing:"border-box"}}/>
+          <PBtn onClick={decode} disabled={!raw.trim()}>Preview →</PBtn>
+        </>
+      ):(
+        <>
+          <div style={{background:"#161616",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px",marginBottom:14}}>
+            <div style={{fontSize:15,fontWeight:600,color:C.text}}>{parsed.title}</div>
+            <div style={{fontSize:12,color:C.muted,marginTop:2}}>{parsed.date}{parsed.location?` · ${parsed.location}`:""}</div>
+          </div>
+          <div style={{fontSize:11,color:C.lime,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>Present ({parsed.present.filter(x=>x.player).length})</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:12}}>
+            {parsed.present.filter(x=>x.player).map(x=><span key={x.player.id} style={{background:"#1a3d1a",border:`1px solid ${C.grass}`,borderRadius:5,padding:"3px 9px",fontSize:12,color:C.lime}}>{x.player.name}</span>)}
+          </div>
+          <div style={{fontSize:11,color:C.red,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>Absent ({parsed.absent.filter(x=>x.player).length})</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:12}}>
+            {parsed.absent.filter(x=>x.player).map(x=><span key={x.player.id} style={{background:"#3a1010",border:`1px solid ${C.red}`,borderRadius:5,padding:"3px 9px",fontSize:12,color:"#ff9999"}}>{x.player.name}</span>)}
+          </div>
+          {unmatched.length>0&&(
+            <div style={{background:"#2a2010",border:`1px solid ${C.amber}`,borderRadius:6,padding:"10px 12px",marginBottom:12}}>
+              <div style={{fontSize:12,color:C.amber,fontWeight:700,marginBottom:4}}>⚠ Not matched to anyone in the squad</div>
+              <div style={{fontSize:12,color:"#ffe099"}}>{unmatched.map(x=>x.raw).join(", ")}</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:4}}>These will be skipped. Add them as players first if they should count.</div>
+            </div>
+          )}
+          {unmentioned.length>0&&(
+            <div style={{fontSize:12,color:C.muted,marginBottom:12}}>
+              Not mentioned in the code, will be left unset: {unmentioned.map(p=>p.name).join(", ")}
+            </div>
+          )}
+          <div style={{display:"flex",gap:10}}>
+            <Ghost onClick={()=>{setParsed(null);setRaw("");}}>← Back</Ghost>
+            <PBtn style={{marginTop:0,flex:1}} onClick={()=>{
+              const attendance={};
+              parsed.present.forEach(x=>{if(x.player)attendance[x.player.id]="present";});
+              parsed.absent.forEach(x=>{if(x.player)attendance[x.player.id]="absent";});
+              onApply({type:"training",date:parsed.date,title:parsed.title,location:parsed.location,notes:"",attendance});
+              onClose();
+            }}>Create session →</PBtn>
+          </div>
+        </>
+      )}
+    </ModalWrap>
+  );
+}
+
+function TimelineScreen({season,players,onOpenSession,onAddSession,onImport,onBack}){
+  const evs=trainingEvents(season);
+  const tourns=[...(season.tournaments||[]),...(season.activeTournament?[season.activeTournament]:[])];
+  const items=[
+    ...evs.map(e=>({kind:"training",date:e.date,ev:e})),
+    ...tourns.map(t=>({kind:"festival",date:t.date,t})),
+  ].sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+
+  const squadRate=evs.length?Math.round(players.reduce((a,p)=>a+(attStats(evs,p.id).rate??0),0)/players.length):null;
+
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:season.name,onClick:onBack},{label:"Timeline"}]}/>
+      <div style={{marginBottom:16}}>
+        <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>Season Timeline</h2>
+        <div style={{fontSize:12,color:C.muted,marginTop:2}}>
+          {evs.length} training session{evs.length!==1?"s":""} · {tourns.length} festival{tourns.length!==1?"s":""}
+          {squadRate!==null?` · Squad attendance ${squadRate}%`:""}
+        </div>
+      </div>
+
+      <div style={{display:"flex",gap:8,marginBottom:20,flexWrap:"wrap"}}>
+        <PBtn style={{width:"auto",marginTop:0,padding:"10px 18px"}} onClick={onAddSession}>+ Training Session</PBtn>
+        <Ghost onClick={onImport}>📋 Import attendance code</Ghost>
+      </div>
+
+      {items.length===0&&<Card><p style={{fontSize:13,color:C.muted}}>Nothing logged yet. Add a training session to start the timeline.</p></Card>}
+
+      {items.map((it,i)=>{
+        if(it.kind==="festival"){
+          const matches=(it.t.teams||[]).reduce((a,t)=>a+(t.matches||[]).length,(it.t.matches||[]).length);
+          return(
+            <div key={"t"+i} style={{display:"flex",gap:12,marginBottom:10}}>
+              <div style={{width:8,flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center"}}>
+                <div style={{width:10,height:10,borderRadius:5,background:C.amber,marginTop:16}}/>
+                <div style={{flex:1,width:2,background:C.border}}/>
+              </div>
+              <div style={{flex:1,background:C.card,border:`1px solid ${C.amber}`,borderRadius:8,padding:14,marginBottom:4}}>
+                <div style={{fontSize:11,color:C.amber,textTransform:"uppercase",letterSpacing:1,fontFamily:"'Barlow Condensed',sans-serif"}}>🏉 Festival</div>
+                <div style={{fontSize:16,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",color:C.text,marginTop:2}}>{it.t.name}</div>
+                <div style={{fontSize:12,color:C.muted,marginTop:2}}>{it.date}{it.t.location?` · ${it.t.location}`:""} · {matches} match{matches!==1?"es":""}</div>
+              </div>
+            </div>
+          );
+        }
+        const e=it.ev;
+        const present=players.filter(p=>["present","late"].includes(e.attendance?.[p.id])).length;
+        const marked=players.filter(p=>e.attendance?.[p.id]).length;
+        return(
+          <div key={e.id} style={{display:"flex",gap:12,marginBottom:10}}>
+            <div style={{width:8,flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center"}}>
+              <div style={{width:10,height:10,borderRadius:5,background:C.grass,marginTop:16}}/>
+              <div style={{flex:1,width:2,background:C.border}}/>
+            </div>
+            <div onClick={()=>onOpenSession(e.id)} style={{flex:1,background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:14,marginBottom:4,cursor:"pointer"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:11,color:C.lime,textTransform:"uppercase",letterSpacing:1,fontFamily:"'Barlow Condensed',sans-serif"}}>Training</div>
+                  <div style={{fontSize:16,fontWeight:700,fontFamily:"'Barlow Condensed',sans-serif",color:C.text,marginTop:2}}>{e.title||"Training"}</div>
+                  <div style={{fontSize:12,color:C.muted,marginTop:2}}>{e.date}{e.location?` · ${e.location}`:""}</div>
+                </div>
+                <div style={{textAlign:"right",flexShrink:0}}>
+                  <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,color:marked?C.lime:"#444"}}>{marked?present:"—"}</div>
+                  <div style={{fontSize:10,color:C.muted}}>{marked?"attended":"no register"}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 
 function App(){
   const[season,setSeason]=useState(null);
@@ -827,7 +1216,7 @@ function App(){
   const[showSaves,setShowSaves]=useState(false);
   const[lastSaved,setLastSaved]=useState(null);
   const[newT,setNewT]=useState({name:"",date:today(),location:"",pitchSize:"",numTeams:1,teamNames:["Team 1","Team 2","Team 3","Team 4"]});
-  const[startupSaves,setStartupSaves]=useState([]);const[selPlayerId,setSelPlayerId]=useState(null);
+  const[startupSaves,setStartupSaves]=useState([]);const[selPlayerId,setSelPlayerId]=useState(null);const[selEventId,setSelEventId]=useState(null);const[showAttImport,setShowAttImport]=useState(false);
   const[showStartup,setShowStartup]=useState(false);
 
   useEffect(()=>{
@@ -848,7 +1237,16 @@ function App(){
   const handleSeasonStart=({seasonName,pitchSize,playerNames})=>{const s=blankSeason(seasonName,pitchSize,playerNames);setSeason(s);save(s);setView("home");};
   const updatePlayer=(id,patch)=>setS(s=>({...s,players:s.players.map(p=>p.id===id?{...p,...patch}:p)}));
   const addPlayer=(name,isGuest=false)=>{if(!name.trim())return;setS(s=>({...s,players:[...s.players,newPlayer(name.trim(),isGuest)]}));};
-  const removePlayer=id=>setS(s=>({...s,players:s.players.filter(p=>p.id!==id)}));
+  const removePlayer=id=>setS(s=>({...s,players:s.players.filter(p=>p.id!==id),combos:(s.combos||[]).filter(c=>c.a!==id&&c.b!==id)}));
+  const addEvent=(ev)=>{const id=uid();setS(s=>({...s,events:[...(s.events||[]),{id,type:"training",date:today(),title:"Training",location:"",notes:"",attendance:{},...ev}]}));return id;};
+  const patchEvent=(id,patch)=>setS(s=>({...s,events:(s.events||[]).map(e=>e.id===id?{...e,...patch}:e)}));
+  const deleteEvent=(id)=>setS(s=>({...s,events:(s.events||[]).filter(e=>e.id!==id)}));
+  const addCombo=(a,b,type,note="")=>setS(s=>{
+    const list=s.combos||[];
+    if(list.some(c=>((c.a===a&&c.b===b)||(c.a===b&&c.b===a))))return s;
+    return{...s,combos:[...list,{id:uid(),a,b,type,note}]};
+  });
+  const removeCombo=(id)=>setS(s=>({...s,combos:(s.combos||[]).filter(c=>c.id!==id)}));
 
   const startTournament=()=>{
     if(!newT.name.trim()){notify("Enter a tournament name","err");return;}
@@ -957,7 +1355,7 @@ function App(){
         <div style={{maxWidth:980,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,cursor:view!=="setup"?"pointer":"default"}} onClick={()=>view!=="setup"&&setView("home")}>
             <span style={{fontSize:24}}>📋</span>
-            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v4.0 · profiles &amp; positions</div></div>
+            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v4.1 · training &amp; development</div></div>
           </div>
           {view!=="setup"&&!showStartup&&(
             <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
@@ -965,6 +1363,7 @@ function App(){
               {activeTournament&&<Pill active={view==="tournament"} onClick={()=>setView("tournament")}>Tournament</Pill>}
               <Pill active={view==="squad"} onClick={()=>setView("squad")}>Squad</Pill>
               <Pill active={view==="players"||view==="player"} onClick={()=>{setSelPlayerId(null);setView("players");}}>Players</Pill>
+              <Pill active={view==="timeline"||view==="session"} onClick={()=>{setSelEventId(null);setView("timeline");}}>📅 Timeline</Pill>
               <Pill onClick={()=>setShowSaves(true)} col={C.amber}>💾 Saves</Pill>
               <Pill onClick={()=>openM("export")}>Export ↗</Pill>
               <Pill onClick={()=>openM("import")}>Import ↙</Pill>
@@ -988,12 +1387,14 @@ function App(){
           </div>
         )}
         {view==="setup"&&!showStartup&&<SeasonSetupScreen onDone={handleSeasonStart} onLoadSaves={()=>setShowSaves(true)} onImportCode={(str)=>{const raw=dec(str.trim());if(!raw?.players||!raw?.name){notify("Invalid code","err");return;}const p=migrateSeason(raw);setSeason(p);save(p);setView("home");setLastSaved(fmtNow());notify("Session restored ✓");}}/>}
-        {view==="home"&&season&&!showStartup&&<SeasonHome season={season} players={season.players} onOpenTournament={()=>setView("tournament")} onNewTournament={()=>openM("newTournament")} onSquad={()=>setView("squad")} onPlayers={()=>{setSelPlayerId(null);setView("players");}} onSeasonStats={()=>setView("stats")}/>}
+        {view==="home"&&season&&!showStartup&&<SeasonHome season={season} players={season.players} onOpenTournament={()=>setView("tournament")} onNewTournament={()=>openM("newTournament")} onSquad={()=>setView("squad")} onPlayers={()=>{setSelPlayerId(null);setView("players");}} onTimeline={()=>{setSelEventId(null);setView("timeline");}} onSeasonStats={()=>setView("stats")}/>}
         {view==="tournament"&&season&&activeTournament&&<TournamentView tournament={activeTournament} season={season} seasonPlayers={season.players} patchTournament={patchTournament} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onBack={(dest)=>setView(dest==="home"?"home":"tournament")} onArchive={()=>openM("archiveConfirm")}/>}
         {view==="squad"&&season&&<SquadManager season={season} players={season.players} updatePlayer={updatePlayer} addPlayer={addPlayer} removePlayer={removePlayer} onBack={()=>setView("home")} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}}/>}
         {view==="stats"&&season&&<StatsView season={season} maxS={maxS} maxR={maxR} openM={openM} setView={setView}/>}
         {view==="players"&&season&&<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("home")}/>}
-        {view==="player"&&season&&(()=>{const pl=season.players.find(x=>x.id===selPlayerId);return pl?<PlayerProfile player={pl} players={season.players} updatePlayer={updatePlayer} notify={notify} onBack={()=>{setSelPlayerId(null);setView("players");}} onOpenPlayer={id=>setSelPlayerId(id)}/>:<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("home")}/>;})()}
+        {view==="player"&&season&&(()=>{const pl=season.players.find(x=>x.id===selPlayerId);return pl?<PlayerProfile player={pl} players={season.players} season={season} updatePlayer={updatePlayer} addCombo={addCombo} removeCombo={removeCombo} notify={notify} onBack={()=>{setSelPlayerId(null);setView("players");}} onOpenPlayer={id=>setSelPlayerId(id)}/>:<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("home")}/>;})()}
+        {view==="timeline"&&season&&<TimelineScreen season={season} players={season.players} onOpenSession={id=>{setSelEventId(id);setView("session");}} onAddSession={()=>{const id=addEvent({});setSelEventId(id);setView("session");}} onImport={()=>setShowAttImport(true)} onBack={()=>setView("home")}/>}
+        {view==="session"&&season&&(()=>{const ev=(season.events||[]).find(x=>x.id===selEventId);return ev?<SessionScreen event={ev} players={season.players} patchEvent={patchEvent} deleteEvent={deleteEvent} notify={notify} onBack={()=>{setSelEventId(null);setView("timeline");}}/>:<TimelineScreen season={season} players={season.players} onOpenSession={id=>{setSelEventId(id);setView("session");}} onAddSession={()=>{const id=addEvent({});setSelEventId(id);setView("session");}} onImport={()=>setShowAttImport(true)} onBack={()=>setView("home")}/>;})()}
       </main>
       {modals.newTournament&&(
         <ModalWrap title="New Tournament" onClose={()=>closeM("newTournament")}>
@@ -1042,6 +1443,7 @@ function App(){
           <PBtn style={{marginTop:12}} onClick={doImport}>Load Session</PBtn>
         </ModalWrap>
       )}
+      {showAttImport&&season&&<AttendanceImport season={season} players={season.players} notify={notify} onApply={ev=>{const id=addEvent(ev);setSelEventId(id);setView("session");notify("Session created ✓");}} onClose={()=>setShowAttImport(false)}/>}
       {showSaves&&<SavesManager season={season} onLoad={handleSavesLoad} onClose={()=>setShowSaves(false)} notify={notify}/>}
       {season&&view!=="setup"&&!showStartup&&(
         <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:150,background:"#1a1200",borderTop:"1px solid #5a3d00",padding:"7px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
