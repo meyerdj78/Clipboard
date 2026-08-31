@@ -10,7 +10,7 @@ Squad selection, tournament management and fair game time tracking for a youth r
 
 | File | Purpose |
 |---|---|
-| `index.html` | The whole app (v3.1w) — React via CDN, no build step |
+| `index.html` | The whole app (v4.0) — React via CDN, no build step |
 | `manifest.json` | Lets the app install to a phone home screen |
 | `icon-192.png` / `icon-512.png` | App icons |
 
@@ -50,8 +50,29 @@ team auto-assign, tournament-scoped fairness, scoring and try scorers.
 
 Next:
 
-- [ ] Season-long player records (training attendance, festival participation)
-- [ ] Coach assessments: attitude, performance, competence, development focus
-- [ ] Position eligibility — 12-a-side: 5 forwards, 9, 10, 15, 2 wings, backs
+- [x] Player profiles, position eligibility, competence ratings, development focus
+- [ ] Training attendance and session records
+- [ ] Coach assessments over time — attitude and performance, dated entries
 - [ ] Player combinations — who plays well together, who doesn't
 - [ ] Read-only sharing for other coaches and parents
+
+## Positions (12 a side)
+
+| Position | On pitch |
+|---|---|
+| Prop | 2 |
+| Hooker | 1 |
+| Lock | 2 |
+| Scrum Half | 1 |
+| Fly Half | 1 |
+| Wing | 2 |
+| Fullback | 1 |
+| Back (general) | 2 |
+
+Front row (2 props + hooker) and second row (2 locks) make the five forwards.
+
+## Version history
+
+- **v4.0** — player profiles, position eligibility, 1–5 star competence ratings,
+  development focus areas, coach notes, position cover summary
+- **v3.1w** — first hosted build: multi-team festivals, roster, scoring

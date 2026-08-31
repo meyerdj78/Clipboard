@@ -68,9 +68,55 @@ const fmtNow=()=>{const d=new Date();return d.toLocaleTimeString("en-GB",{hour:"
 const fairScoreT=(p,maxT)=>{if(!p.attending||p.ill)return -1;return Math.round((maxT>0?1-(p.tournamentHalves??0)/maxT:1)*100);};
 const fairSortTeam=(players)=>{const avail=players.filter(p=>p.attending&&!p.ill);const maxT=Math.max(...avail.map(p=>p.tournamentHalves??0),1);return [...avail].sort((a,b)=>fairScoreT(b,maxT)-fairScoreT(a,maxT));};
 const fairScore=(p,maxS,maxR)=>{if(p.ill||!p.available)return -1;return Math.round(((maxS>0?1-p.seasonHalves/maxS:1)*0.6+(maxR>0?1-(p.recentHalves??0)/maxR:1)*0.4)*100);};
-const blankSeason=(name,pitchSize,playerNames)=>({id:uid(),name,pitchSize,players:playerNames.map(n=>({id:uid(),name:n,seasonHalves:0,recentHalves:0,available:true,ill:false,isGuest:false})),tournaments:[],activeTournament:null});
+const POSITIONS=[
+  {key:"prop",label:"Prop",short:"PR",group:"Forwards"},
+  {key:"hooker",label:"Hooker",short:"HK",group:"Forwards"},
+  {key:"lock",label:"Lock",short:"LK",group:"Forwards"},
+  {key:"sh",label:"Scrum Half",short:"9",group:"Halves"},
+  {key:"fh",label:"Fly Half",short:"10",group:"Halves"},
+  {key:"wing",label:"Wing",short:"W",group:"Backs"},
+  {key:"fb",label:"Fullback",short:"15",group:"Backs"},
+  {key:"back",label:"Back",short:"B",group:"Backs"},
+];
+const FORMATION=[
+  {key:"prop",count:2},{key:"hooker",count:1},{key:"lock",count:2},
+  {key:"sh",count:1},{key:"fh",count:1},{key:"wing",count:2},
+  {key:"fb",count:1},{key:"back",count:2},
+];
+const posLabel=k=>POSITIONS.find(x=>x.key===k)?.label??k;
+const posShort=k=>POSITIONS.find(x=>x.key===k)?.short??"?";
+
+const SKILLS=[
+  {key:"passing",label:"Passing"},
+  {key:"catching",label:"Catching"},
+  {key:"tackling",label:"Tackling"},
+  {key:"contact",label:"Contact & rucking"},
+  {key:"running",label:"Running lines"},
+  {key:"kicking",label:"Kicking"},
+  {key:"decisions",label:"Decision making"},
+  {key:"awareness",label:"Game awareness"},
+];
+const avgSkill=p=>{
+  const v=SKILLS.map(sk=>p.competence?.[sk.key]||0).filter(n=>n>0);
+  return v.length?v.reduce((a,b)=>a+b,0)/v.length:0;
+};
+
+const migratePlayer=p=>({
+  ...p,
+  positions:Array.isArray(p.positions)?p.positions:[],
+  primary:p.primary??null,
+  competence:(p.competence&&typeof p.competence==="object")?p.competence:{},
+  focus:Array.isArray(p.focus)?p.focus:[],
+  notes:typeof p.notes==="string"?p.notes:"",
+  assessments:Array.isArray(p.assessments)?p.assessments:[],
+  attendance:Array.isArray(p.attendance)?p.attendance:[],
+  links:(p.links&&Array.isArray(p.links.with)&&Array.isArray(p.links.avoid))?p.links:{with:[],avoid:[]},
+});
+const newPlayer=(name,isGuest=false)=>migratePlayer({id:uid(),name,seasonHalves:0,recentHalves:0,available:true,ill:false,isGuest});
+
+const blankSeason=(name,pitchSize,playerNames)=>({id:uid(),name,pitchSize,players:playerNames.map(n=>newPlayer(n,false)),tournaments:[],activeTournament:null});
 const blankTournament=(name,date,location,pitchSize,numTeams,teamNames,squadPlayers)=>({id:uid(),name,date,location,pitchSize,numTeams,status:"roster",teams:Array.from({length:numTeams},(_,i)=>({id:uid(),name:teamNames[i]||`Team ${i+1}`,matches:[]})),roster:squadPlayers.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId:null,tournamentHalves:0}))});
-const migrateSeason=(s)=>{if(!s?.activeTournament)return s;const t=s.activeTournament;if(t.teams&&t.roster)return s;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
+const migrateSeason=(s)=>{if(!s)return s;const s2={...s,players:(s.players||[]).map(migratePlayer)};if(!s2.activeTournament)return s2;const t=s2.activeTournament;if(t.teams&&t.roster)return s2;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s2.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s2,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
 
 const Lbl=({children,mt=12})=><div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:5,marginTop:mt,fontFamily:"'Barlow Condensed',sans-serif"}}>{children}</div>;
 const Inp=({style,...p})=><input style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:16,width:"100%",outline:"none",fontFamily:"inherit",boxSizing:"border-box",...style}} {...p}/>;
@@ -507,13 +553,13 @@ function SeasonSetupScreen({onDone,onLoadSaves,onImportCode}){
   );
 }
 
-function SeasonHome({season,players,onOpenTournament,onNewTournament,onSquad,onSeasonStats}){
+function SeasonHome({season,players,onOpenTournament,onNewTournament,onSquad,onPlayers,onSeasonStats}){
   const maxS=Math.max(...players.map(p=>p.seasonHalves),1);
   const maxR=Math.max(...players.map(p=>p.recentHalves??0),1);
   return(
     <>
       <div style={{marginBottom:20}}><h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>{season.name}</h2><div style={{fontSize:12,color:C.muted,marginTop:2}}>{players.length} players · {season.tournaments.length} tournament{season.tournaments.length!==1?"s":""} archived</div></div>
-      <div style={{display:"flex",gap:10,marginBottom:22,flexWrap:"wrap"}}><PBtn style={{width:"auto",marginTop:0,padding:"10px 20px"}} onClick={onNewTournament}>+ New Tournament</PBtn><Ghost onClick={onSquad}>Manage Squad</Ghost><Ghost onClick={onSeasonStats}>Season Stats</Ghost></div>
+      <div style={{display:"flex",gap:10,marginBottom:22,flexWrap:"wrap"}}><PBtn style={{width:"auto",marginTop:0,padding:"10px 20px"}} onClick={onNewTournament}>+ New Tournament</PBtn><Ghost onClick={onSquad}>Manage Squad</Ghost><Ghost onClick={onPlayers}>Players &amp; Positions</Ghost><Ghost onClick={onSeasonStats}>Season Stats</Ghost></div>
       {season.activeTournament&&<><SHead>Active Tournament</SHead><div style={{background:C.card,border:`1px solid ${C.lime}`,borderRadius:10,padding:18,marginBottom:20,cursor:"pointer"}} onClick={onOpenTournament}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime}}>{season.activeTournament.name}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{season.activeTournament.date} · {season.activeTournament.teams?.length||1} team{(season.activeTournament.teams?.length||1)!==1?"s":""} · {season.activeTournament.teams?.reduce((a,t)=>a+t.matches.length,0)||0} matches</div></div><span style={{color:C.lime,fontSize:20}}>›</span></div></div></>}
       {season.tournaments.length>0&&<><SHead>Past Tournaments</SHead><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10,marginBottom:22}}>{season.tournaments.map(t=><div key={t.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:14}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:C.amber,marginBottom:3}}>{t.name}</div><div style={{fontSize:12,color:C.muted}}>{t.date} · {t.teams?.length||1} team{(t.teams?.length||1)!==1?"s":""}</div></div>)}</div></>}
       <SHead>Season Game Time</SHead>
@@ -522,7 +568,7 @@ function SeasonHome({season,players,onOpenTournament,onNewTournament,onSquad,onS
   );
 }
 
-function SquadManager({season,players,updatePlayer,addPlayer,removePlayer,onBack}){
+function SquadManager({season,players,updatePlayer,addPlayer,removePlayer,onBack,onOpenPlayer}){
   const[gName,setGName]=useState("");const[pName,setPName]=useState("");const[confirmRemove,setConfirmRemove]=useState(null);
   const maxS=Math.max(...players.map(p=>p.seasonHalves),1);const maxR=Math.max(...players.map(p=>p.recentHalves??0),1);
   return(
@@ -531,7 +577,7 @@ function SquadManager({season,players,updatePlayer,addPlayer,removePlayer,onBack
       <Card>
         {players.map(p=>{const fs=fairScore(p,maxS,maxR);return(
           <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 0",borderBottom:`1px solid ${C.border}`,gap:10,flexWrap:"wrap"}}>
-            <div style={{minWidth:140}}><div style={{fontSize:15,fontWeight:500,opacity:p.ill?0.4:1}}>{p.name}{p.isGuest?" 👤":""}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>Season: {p.seasonHalves} · Recent: {p.recentHalves??0}</div><div style={{marginTop:4,maxWidth:160}}><FBar score={Math.max(fs,0)}/></div></div>
+            <div style={{minWidth:140}}><div onClick={()=>onOpenPlayer&&onOpenPlayer(p.id)} style={{fontSize:15,fontWeight:500,opacity:p.ill?0.4:1,cursor:"pointer",color:C.lime}}>{p.name}{p.isGuest?" 👤":""} <span style={{fontSize:11,color:C.muted}}>›</span></div><div style={{fontSize:11,color:C.muted,marginTop:2}}>Season: {p.seasonHalves} · Recent: {p.recentHalves??0}</div><div style={{marginTop:4,maxWidth:160}}><FBar score={Math.max(fs,0)}/></div></div>
             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
               <button onClick={()=>updatePlayer(p.id,{available:!p.available,ill:false})} style={{padding:"5px 10px",borderRadius:4,border:"none",fontSize:12,cursor:"pointer",background:p.available&&!p.ill?C.grass:"#333",color:"#fff"}}>{p.available&&!p.ill?"✓ Avail":"Unavail"}</button>
               <button onClick={()=>updatePlayer(p.id,{ill:!p.ill,available:p.ill})} style={{padding:"5px 10px",borderRadius:4,border:`1px solid ${p.ill?C.red:"#444"}`,fontSize:12,cursor:"pointer",background:p.ill?C.red:"#2a2a2a",color:"#fff"}}>{p.ill?"🤒 Ill":"Mark Ill"}</button>
@@ -571,6 +617,206 @@ function StatsView({season,maxS,maxR,openM,setView}){
   );
 }
 
+function Stars({value,onSet,size=22}){
+  return(
+    <div style={{display:"flex",gap:2}}>
+      {[1,2,3,4,5].map(n=>(
+        <button key={n} onClick={()=>onSet(n)} aria-label={`${n} star${n>1?"s":""}`}
+          style={{background:"none",border:"none",cursor:"pointer",padding:"2px 3px",fontSize:size,lineHeight:1,color:n<=value?C.amber:"#3a3a3a"}}>★</button>
+      ))}
+    </div>
+  );
+}
+
+function PlayerProfile({player,players,updatePlayer,onBack,onOpenPlayer,notify}){
+  const[focusTxt,setFocusTxt]=useState("");
+  const p=player;
+
+  const cyclePos=k=>{
+    const has=p.positions.includes(k);
+    if(!has){updatePlayer(p.id,{positions:[...p.positions,k]});}
+    else if(p.primary!==k){updatePlayer(p.id,{primary:k});}
+    else {updatePlayer(p.id,{positions:p.positions.filter(x=>x!==k),primary:null});}
+  };
+  const setSkill=(k,v)=>updatePlayer(p.id,{competence:{...p.competence,[k]:p.competence?.[k]===v?0:v}});
+  const addFocus=()=>{
+    const t=focusTxt.trim();
+    if(!t)return;
+    if(p.focus.includes(t)){notify("Already on the list","err");setFocusTxt("");return;}
+    updatePlayer(p.id,{focus:[...p.focus,t]});setFocusTxt("");
+  };
+  const rmFocus=t=>updatePlayer(p.id,{focus:p.focus.filter(x=>x!==t)});
+
+  const groups=[...new Set(POSITIONS.map(x=>x.group))];
+  const avg=avgSkill(p);
+
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:"Players",onClick:onBack},{label:p.name}]}/>
+
+      <Card>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:10,flexWrap:"wrap"}}>
+          <div>
+            <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>{p.name}{p.isGuest?" 👤":""}</h2>
+            <div style={{fontSize:12,color:C.muted,marginTop:3}}>
+              {p.seasonHalves} halves this season
+              {p.primary?` · Primary: ${posLabel(p.primary)}`:""}
+            </div>
+          </div>
+          {avg>0&&(
+            <div style={{textAlign:"right"}}>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900,color:C.amber,lineHeight:1}}>{avg.toFixed(1)}</div>
+              <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>Avg rating</div>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      <SHead>Positions</SHead>
+      <Card>
+        <p style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.6}}>
+          Tap once for <strong style={{color:C.lime}}>can play</strong>, again for <strong style={{color:C.amber}}>primary</strong>, again to clear.
+        </p>
+        {groups.map(g=>(
+          <div key={g} style={{marginBottom:12}}>
+            <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>{g}</div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+              {POSITIONS.filter(x=>x.group===g).map(x=>{
+                const isPrimary=p.primary===x.key;
+                const can=p.positions.includes(x.key);
+                const bg=isPrimary?C.amber:can?C.grass:"#2a2a2a";
+                const col=isPrimary?"#111":can?"#fff":C.soft;
+                return(
+                  <button key={x.key} onClick={()=>cyclePos(x.key)}
+                    style={{padding:"8px 14px",borderRadius:6,fontSize:14,cursor:"pointer",fontFamily:"inherit",background:bg,color:col,border:`1px solid ${isPrimary?C.amber:can?C.grass:"#333"}`,fontWeight:isPrimary?700:400}}>
+                    {x.label}{isPrimary?" ★":""}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </Card>
+
+      <SHead>Competence</SHead>
+      <Card>
+        {SKILLS.map(sk=>(
+          <div key={sk.key} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
+            <span style={{fontSize:14}}>{sk.label}</span>
+            <Stars value={p.competence?.[sk.key]||0} onSet={v=>setSkill(sk.key,v)}/>
+          </div>
+        ))}
+        <p style={{fontSize:11,color:"#444",marginTop:10}}>Tap the same star again to clear a rating.</p>
+      </Card>
+
+      <SHead>Development Focus</SHead>
+      <Card>
+        <div style={{display:"flex",gap:6,marginBottom:12}}>
+          <Inp placeholder="e.g. Tackle technique — head position" value={focusTxt}
+            onChange={e=>setFocusTxt(e.target.value)}
+            onKeyDown={e=>{if(e.key==="Enter")addFocus();}}/>
+          <button onClick={addFocus} style={{padding:"8px 14px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Add</button>
+        </div>
+        {p.focus.length===0&&<p style={{fontSize:13,color:C.muted}}>Nothing recorded yet.</p>}
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {p.focus.map(t=>(
+            <div key={t} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,background:"#252525",border:"1px solid #333",borderRadius:6,padding:"8px 12px"}}>
+              <span style={{fontSize:13,color:C.text}}>🎯 {t}</span>
+              <button onClick={()=>rmFocus(t)} style={{background:"none",border:"none",color:"#666",cursor:"pointer",fontSize:14,flexShrink:0}}>✕</button>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <SHead>Coach Notes</SHead>
+      <Card>
+        <textarea value={p.notes} onChange={e=>updatePlayer(p.id,{notes:e.target.value})}
+          placeholder="Anything worth remembering — what motivates them, what to watch for…"
+          style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"10px 12px",fontSize:16,width:"100%",height:110,outline:"none",resize:"vertical",fontFamily:"inherit",boxSizing:"border-box",lineHeight:1.5}}/>
+      </Card>
+
+      <Ghost onClick={onBack} style={{width:"100%",textAlign:"center"}}>← Back to Players</Ghost>
+    </>
+  );
+}
+
+function PlayersScreen({season,players,onOpenPlayer,onBack}){
+  const[sortBy,setSortBy]=useState("name");
+  const cover=FORMATION.map(f=>({
+    ...f,
+    label:posLabel(f.key),
+    able:players.filter(p=>!p.isGuest&&p.positions.includes(f.key)).length,
+  }));
+  const unset=players.filter(p=>p.positions.length===0).length;
+
+  const sorted=[...players].sort((a,b)=>{
+    if(sortBy==="rating")return avgSkill(b)-avgSkill(a);
+    if(sortBy==="halves")return b.seasonHalves-a.seasonHalves;
+    return a.name.localeCompare(b.name);
+  });
+
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:season.name,onClick:onBack},{label:"Players"}]}/>
+      <div style={{marginBottom:18}}>
+        <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>Players</h2>
+        <div style={{fontSize:12,color:C.muted,marginTop:2}}>{players.length} in the squad{unset>0?` · ${unset} with no positions set`:""}</div>
+      </div>
+
+      <SHead>Position Cover — 12 a side</SHead>
+      <Card>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(132px,1fr))",gap:8}}>
+          {cover.map(c=>{
+            const short=c.able<c.count;
+            const thin=!short&&c.able<c.count+2;
+            const col=short?C.red:thin?C.amber:C.lime;
+            return(
+              <div key={c.key} style={{background:"#161616",border:`1px solid ${short?C.red:C.border}`,borderRadius:8,padding:"10px 12px"}}>
+                <div style={{fontSize:13,fontWeight:600,color:C.text}}>{c.label}</div>
+                <div style={{fontSize:11,color:C.muted,marginTop:2}}>Needs {c.count} on the pitch</div>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,color:col,marginTop:4}}>{c.able} <span style={{fontSize:12,fontWeight:400,color:C.muted}}>can play</span></div>
+              </div>
+            );
+          })}
+        </div>
+        <p style={{fontSize:11,color:"#444",marginTop:10}}>Red means you have fewer players able to cover the position than you need on the pitch.</p>
+      </Card>
+
+      <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+        <span style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,fontFamily:"'Barlow Condensed',sans-serif"}}>Sort</span>
+        <Pill active={sortBy==="name"} onClick={()=>setSortBy("name")}>Name</Pill>
+        <Pill active={sortBy==="rating"} onClick={()=>setSortBy("rating")}>Rating</Pill>
+        <Pill active={sortBy==="halves"} onClick={()=>setSortBy("halves")}>Game time</Pill>
+      </div>
+
+      <Card>
+        {sorted.map(p=>{
+          const avg=avgSkill(p);
+          return(
+            <div key={p.id} onClick={()=>onOpenPlayer(p.id)}
+              style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,padding:"11px 0",borderBottom:`1px solid ${C.border}`,cursor:"pointer"}}>
+              <div style={{minWidth:0,flex:1}}>
+                <div style={{fontSize:15,fontWeight:500,color:C.text}}>{p.name}{p.isGuest?" 👤":""}</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:5}}>
+                  {p.positions.length===0&&<span style={{fontSize:11,color:"#555"}}>No positions set</span>}
+                  {p.positions.map(k=>(
+                    <span key={k} style={{background:p.primary===k?C.amber:"#252525",color:p.primary===k?"#111":C.soft,border:`1px solid ${p.primary===k?C.amber:"#333"}`,borderRadius:4,padding:"2px 7px",fontSize:11,fontWeight:p.primary===k?700:400}}>{posShort(k)}</span>
+                  ))}
+                  {p.focus.length>0&&<span style={{fontSize:11,color:C.blue,marginLeft:2}}>🎯 {p.focus.length}</span>}
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+                <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,color:avg>0?C.amber:"#3a3a3a"}}>{avg>0?`★ ${avg.toFixed(1)}`:"—"}</span>
+                <span style={{color:C.muted,fontSize:18}}>›</span>
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+    </>
+  );
+}
+
 function App(){
   const[season,setSeason]=useState(null);
   const[view,setView]=useState("boot");
@@ -581,7 +827,7 @@ function App(){
   const[showSaves,setShowSaves]=useState(false);
   const[lastSaved,setLastSaved]=useState(null);
   const[newT,setNewT]=useState({name:"",date:today(),location:"",pitchSize:"",numTeams:1,teamNames:["Team 1","Team 2","Team 3","Team 4"]});
-  const[startupSaves,setStartupSaves]=useState([]);
+  const[startupSaves,setStartupSaves]=useState([]);const[selPlayerId,setSelPlayerId]=useState(null);
   const[showStartup,setShowStartup]=useState(false);
 
   useEffect(()=>{
@@ -601,7 +847,7 @@ function App(){
 
   const handleSeasonStart=({seasonName,pitchSize,playerNames})=>{const s=blankSeason(seasonName,pitchSize,playerNames);setSeason(s);save(s);setView("home");};
   const updatePlayer=(id,patch)=>setS(s=>({...s,players:s.players.map(p=>p.id===id?{...p,...patch}:p)}));
-  const addPlayer=(name,isGuest=false)=>{if(!name.trim())return;setS(s=>({...s,players:[...s.players,{id:uid(),name:name.trim(),seasonHalves:0,recentHalves:0,available:true,ill:false,isGuest}]}));};
+  const addPlayer=(name,isGuest=false)=>{if(!name.trim())return;setS(s=>({...s,players:[...s.players,newPlayer(name.trim(),isGuest)]}));};
   const removePlayer=id=>setS(s=>({...s,players:s.players.filter(p=>p.id!==id)}));
 
   const startTournament=()=>{
@@ -711,13 +957,14 @@ function App(){
         <div style={{maxWidth:980,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,cursor:view!=="setup"?"pointer":"default"}} onClick={()=>view!=="setup"&&setView("home")}>
             <span style={{fontSize:24}}>📋</span>
-            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v3.1w · web build</div></div>
+            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v4.0 · profiles &amp; positions</div></div>
           </div>
           {view!=="setup"&&!showStartup&&(
             <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
               <Pill active={view==="home"} onClick={()=>setView("home")}>Season</Pill>
               {activeTournament&&<Pill active={view==="tournament"} onClick={()=>setView("tournament")}>Tournament</Pill>}
               <Pill active={view==="squad"} onClick={()=>setView("squad")}>Squad</Pill>
+              <Pill active={view==="players"||view==="player"} onClick={()=>{setSelPlayerId(null);setView("players");}}>Players</Pill>
               <Pill onClick={()=>setShowSaves(true)} col={C.amber}>💾 Saves</Pill>
               <Pill onClick={()=>openM("export")}>Export ↗</Pill>
               <Pill onClick={()=>openM("import")}>Import ↙</Pill>
@@ -741,10 +988,12 @@ function App(){
           </div>
         )}
         {view==="setup"&&!showStartup&&<SeasonSetupScreen onDone={handleSeasonStart} onLoadSaves={()=>setShowSaves(true)} onImportCode={(str)=>{const raw=dec(str.trim());if(!raw?.players||!raw?.name){notify("Invalid code","err");return;}const p=migrateSeason(raw);setSeason(p);save(p);setView("home");setLastSaved(fmtNow());notify("Session restored ✓");}}/>}
-        {view==="home"&&season&&!showStartup&&<SeasonHome season={season} players={season.players} onOpenTournament={()=>setView("tournament")} onNewTournament={()=>openM("newTournament")} onSquad={()=>setView("squad")} onSeasonStats={()=>setView("stats")}/>}
+        {view==="home"&&season&&!showStartup&&<SeasonHome season={season} players={season.players} onOpenTournament={()=>setView("tournament")} onNewTournament={()=>openM("newTournament")} onSquad={()=>setView("squad")} onPlayers={()=>{setSelPlayerId(null);setView("players");}} onSeasonStats={()=>setView("stats")}/>}
         {view==="tournament"&&season&&activeTournament&&<TournamentView tournament={activeTournament} season={season} seasonPlayers={season.players} patchTournament={patchTournament} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onBack={(dest)=>setView(dest==="home"?"home":"tournament")} onArchive={()=>openM("archiveConfirm")}/>}
-        {view==="squad"&&season&&<SquadManager season={season} players={season.players} updatePlayer={updatePlayer} addPlayer={addPlayer} removePlayer={removePlayer} onBack={()=>setView("home")}/>}
+        {view==="squad"&&season&&<SquadManager season={season} players={season.players} updatePlayer={updatePlayer} addPlayer={addPlayer} removePlayer={removePlayer} onBack={()=>setView("home")} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}}/>}
         {view==="stats"&&season&&<StatsView season={season} maxS={maxS} maxR={maxR} openM={openM} setView={setView}/>}
+        {view==="players"&&season&&<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("home")}/>}
+        {view==="player"&&season&&(()=>{const pl=season.players.find(x=>x.id===selPlayerId);return pl?<PlayerProfile player={pl} players={season.players} updatePlayer={updatePlayer} notify={notify} onBack={()=>{setSelPlayerId(null);setView("players");}} onOpenPlayer={id=>setSelPlayerId(id)}/>:<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("home")}/>;})()}
       </main>
       {modals.newTournament&&(
         <ModalWrap title="New Tournament" onClose={()=>closeM("newTournament")}>
