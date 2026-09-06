@@ -926,7 +926,101 @@ function PlayerProfile({player,players,season,updatePlayer,addCombo,removeCombo,
   );
 }
 
-function PlayersScreen({season,players,onOpenPlayer,onBack}){
+function AssessScreen({season,players,updatePlayer,notify,onBack,onOpenPlayer}){
+  const DIMS=[
+    ...SKILLS.map(x=>({...x,kind:"skill"})),
+    ...BEHAVIOURS.map(x=>({...x,kind:"behaviour"})),
+  ];
+  const[idx,setIdx]=useState(0);
+  const[hideRated,setHideRated]=useState(false);
+  const d=DIMS[idx];
+  const field=d.kind==="skill"?"competence":"behaviour";
+
+  const val=p=>(d.kind==="skill"?p.competence:p.behaviour)?.[d.key]||0;
+  const setVal=(p,v)=>updatePlayer(p.id,{[field]:{...(p[field]||{}),[d.key]:val(p)===v?0:v}});
+
+  const sorted=[...players].sort((a,b)=>a.name.localeCompare(b.name));
+  const shown=hideRated?sorted.filter(p=>val(p)===0):sorted;
+  const done=sorted.filter(p=>val(p)>0).length;
+
+  const snapshotAll=()=>{
+    const dt=today();
+    players.forEach(pl=>{
+      updatePlayer(pl.id,{assessments:[{id:uid(),date:dt,competence:{...pl.competence},behaviour:{...pl.behaviour}},...(pl.assessments||[])]});
+    });
+    notify(`Snapshot saved for ${players.length} players ✓`);
+  };
+
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:"Players",onClick:onBack},{label:"Rapid Assess"}]}/>
+
+      <Card style={{position:"sticky",top:54,zIndex:80}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:10}}>
+          <button onClick={()=>setIdx(i=>Math.max(0,i-1))} disabled={idx===0}
+            style={{padding:"8px 12px",background:"transparent",border:`1px solid ${idx===0?"#222":C.border}`,borderRadius:5,color:idx===0?"#333":C.soft,fontSize:14,cursor:idx===0?"not-allowed":"pointer",fontFamily:"inherit"}}>←</button>
+          <div style={{textAlign:"center",minWidth:0,flex:1}}>
+            <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1.5,fontFamily:"'Barlow Condensed',sans-serif"}}>
+              {d.kind==="skill"?"Skill":d.group} · {idx+1} of {DIMS.length}
+            </div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:700,color:d.kind==="skill"?C.amber:C.blue,lineHeight:1.2}}>{d.label}</div>
+          </div>
+          <button onClick={()=>setIdx(i=>Math.min(DIMS.length-1,i+1))} disabled={idx===DIMS.length-1}
+            style={{padding:"8px 12px",background:idx===DIMS.length-1?"transparent":C.grass,border:`1px solid ${idx===DIMS.length-1?"#222":C.grass}`,borderRadius:5,color:idx===DIMS.length-1?"#333":"#fff",fontSize:14,cursor:idx===DIMS.length-1?"not-allowed":"pointer",fontFamily:"inherit",fontWeight:700}}>→</button>
+        </div>
+        {d.kind==="behaviour"&&(
+          <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:8}}>
+            <span style={{fontSize:11,color:"#5a5a5a"}}>1 = {d.low}</span>
+            <span style={{fontSize:11,color:"#5a5a5a",textAlign:"right"}}>5 = {d.high}</span>
+          </div>
+        )}
+        <div style={{height:4,background:"#252525",borderRadius:2,overflow:"hidden"}}>
+          <div style={{height:"100%",width:`${(done/Math.max(players.length,1))*100}%`,background:C.lime,transition:"width 0.2s"}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:7,gap:8}}>
+          <span style={{fontSize:11,color:C.muted}}>{done} of {players.length} rated</span>
+          <button onClick={()=>setHideRated(v=>!v)} style={{background:"none",border:"none",color:hideRated?C.lime:C.muted,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>
+            {hideRated?"✓ Hiding rated":"Hide already rated"}
+          </button>
+        </div>
+      </Card>
+
+      <Card>
+        {shown.length===0&&<p style={{fontSize:13,color:C.muted}}>Everyone rated for this one. Tap → for the next.</p>}
+        {shown.map(p=>(
+          <div key={p.id} style={{padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:d.kind==="behaviour"?6:0,flexWrap:"wrap"}}>
+              <span onClick={()=>onOpenPlayer(p.id)} style={{fontSize:14,cursor:"pointer",minWidth:100,flex:1,color:val(p)>0?C.text:C.soft}}>{p.name}</span>
+              {d.kind==="skill"
+                ? <Stars value={val(p)} onSet={v=>setVal(p,v)}/>
+                : <div style={{flex:1,minWidth:180}}>
+                    <div style={{display:"flex",gap:4}}>
+                      {[1,2,3,4,5].map(n=>(
+                        <button key={n} onClick={()=>setVal(p,n)}
+                          style={{flex:1,height:32,borderRadius:4,cursor:"pointer",fontFamily:"inherit",fontSize:13,
+                            border:`1px solid ${n<=val(p)?C.blue:"#333"}`,background:n<=val(p)?C.blue:"#212121",color:n<=val(p)?"#fff":"#555"}}>{n}</button>
+                      ))}
+                    </div>
+                  </div>}
+            </div>
+          </div>
+        ))}
+      </Card>
+
+      <SHead>When you've finished a pass</SHead>
+      <Card>
+        <p style={{fontSize:12,color:C.muted,marginBottom:10,lineHeight:1.6}}>
+          Saves today's ratings as a dated snapshot for every player, so you can see how the picture moves across the season. Current ratings stay editable.
+        </p>
+        <Ghost onClick={snapshotAll} style={{width:"100%",textAlign:"center"}}>📌 Snapshot whole squad for {today()}</Ghost>
+      </Card>
+
+      <Ghost onClick={onBack} style={{width:"100%",textAlign:"center"}}>← Back to Players</Ghost>
+    </>
+  );
+}
+
+function PlayersScreen({season,players,onOpenPlayer,onBack,onAssess}){
   const[sortBy,setSortBy]=useState("name");
   const evs=trainingEvents(season);
   const cover=FORMATION.map(f=>({...f,label:posLabel(f.key),able:players.filter(p=>!p.isGuest&&p.positions.includes(f.key)).length}));
@@ -962,6 +1056,8 @@ function PlayersScreen({season,players,onOpenPlayer,onBack}){
         </div>
         <p style={{fontSize:11,color:"#444",marginTop:10}}>Red means fewer players able to cover the position than you need on the pitch.</p>
       </Card>
+
+      <PBtn style={{marginTop:0,marginBottom:14}} color={C.blue} onClick={onAssess}>⚡ Rapid Assess — whole squad, one thing at a time</PBtn>
 
       <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
         <span style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,fontFamily:"'Barlow Condensed',sans-serif"}}>Sort</span>
@@ -1355,7 +1451,7 @@ function App(){
         <div style={{maxWidth:980,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,cursor:view!=="setup"?"pointer":"default"}} onClick={()=>view!=="setup"&&setView("home")}>
             <span style={{fontSize:24}}>📋</span>
-            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v4.1 · training &amp; development</div></div>
+            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v4.2 · rapid assess</div></div>
           </div>
           {view!=="setup"&&!showStartup&&(
             <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
@@ -1391,8 +1487,9 @@ function App(){
         {view==="tournament"&&season&&activeTournament&&<TournamentView tournament={activeTournament} season={season} seasonPlayers={season.players} patchTournament={patchTournament} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onBack={(dest)=>setView(dest==="home"?"home":"tournament")} onArchive={()=>openM("archiveConfirm")}/>}
         {view==="squad"&&season&&<SquadManager season={season} players={season.players} updatePlayer={updatePlayer} addPlayer={addPlayer} removePlayer={removePlayer} onBack={()=>setView("home")} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}}/>}
         {view==="stats"&&season&&<StatsView season={season} maxS={maxS} maxR={maxR} openM={openM} setView={setView}/>}
-        {view==="players"&&season&&<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("home")}/>}
-        {view==="player"&&season&&(()=>{const pl=season.players.find(x=>x.id===selPlayerId);return pl?<PlayerProfile player={pl} players={season.players} season={season} updatePlayer={updatePlayer} addCombo={addCombo} removeCombo={removeCombo} notify={notify} onBack={()=>{setSelPlayerId(null);setView("players");}} onOpenPlayer={id=>setSelPlayerId(id)}/>:<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("home")}/>;})()}
+        {view==="players"&&season&&<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} onBack={()=>setView("home")}/>}
+        {view==="assess"&&season&&<AssessScreen season={season} players={season.players} updatePlayer={updatePlayer} notify={notify} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("players")}/>}
+        {view==="player"&&season&&(()=>{const pl=season.players.find(x=>x.id===selPlayerId);return pl?<PlayerProfile player={pl} players={season.players} season={season} updatePlayer={updatePlayer} addCombo={addCombo} removeCombo={removeCombo} notify={notify} onBack={()=>{setSelPlayerId(null);setView("players");}} onOpenPlayer={id=>setSelPlayerId(id)}/>:<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} onBack={()=>setView("home")}/>;})()}
         {view==="timeline"&&season&&<TimelineScreen season={season} players={season.players} onOpenSession={id=>{setSelEventId(id);setView("session");}} onAddSession={()=>{const id=addEvent({});setSelEventId(id);setView("session");}} onImport={()=>setShowAttImport(true)} onBack={()=>setView("home")}/>}
         {view==="session"&&season&&(()=>{const ev=(season.events||[]).find(x=>x.id===selEventId);return ev?<SessionScreen event={ev} players={season.players} patchEvent={patchEvent} deleteEvent={deleteEvent} notify={notify} onBack={()=>{setSelEventId(null);setView("timeline");}}/>:<TimelineScreen season={season} players={season.players} onOpenSession={id=>{setSelEventId(id);setView("session");}} onAddSession={()=>{const id=addEvent({});setSelEventId(id);setView("session");}} onImport={()=>setShowAttImport(true)} onBack={()=>setView("home")}/>;})()}
       </main>
