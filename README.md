@@ -2,7 +2,7 @@
 
 Squad selection, tournament management and fair game time tracking for a youth rugby squad.
 
-**Live app:** https://meyerdj78.github.io/the-clipboard/
+**Live app:**(https://meyerdj78.github.io/Clipboard/)
 
 ---
 
