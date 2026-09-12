@@ -104,6 +104,7 @@ const avgSkill=p=>{
 const migratePlayer=p=>({
   ...p,
   positions:Array.isArray(p.positions)?p.positions:[],
+  preferred:Array.isArray(p.preferred)?p.preferred:[],
   primary:p.primary??null,
   competence:(p.competence&&typeof p.competence==="object")?p.competence:{},
   behaviour:(p.behaviour&&typeof p.behaviour==="object")?p.behaviour:{},
@@ -160,9 +161,54 @@ const matchSquad=(rawNames,players)=>rawNames.map(raw=>{
   return{raw,player:hit||null};
 });
 
+const AVAIL=[
+  {key:"yes",label:"Available",short:"✓",col:C.lime},
+  {key:"maybe",label:"Maybe",short:"?",col:C.amber},
+  {key:"no",label:"Not available",short:"✕",col:C.red},
+];
+const EV_TYPES=[
+  {key:"training",label:"Training",icon:"🏃",col:C.grass},
+  {key:"festival",label:"Festival",icon:"🏉",col:C.amber},
+  {key:"other",label:"Other",icon:"📌",col:C.blue},
+];
+const evType=k=>EV_TYPES.find(x=>x.key===k)||EV_TYPES[0];
+const isFuture=d=>String(d||"")>today();
+const allEvents=s=>(s?.events||[]);
+
+const tournamentsAttended=(season,pid)=>{
+  const ts=[...(season?.tournaments||[]),...(season?.activeTournament?[season.activeTournament]:[])];
+  return ts.filter(t=>(t.roster||[]).some(r=>r.playerId===pid&&r.attending&&!r.ill)).length;
+};
+const festivalsPlanned=(season,pid)=>allEvents(season)
+  .filter(e=>e.type==="festival"&&isFuture(e.date)&&e.availability?.[pid]==="no").length;
+
+const upcomingUnavailable=(season,pid)=>allEvents(season)
+  .filter(e=>isFuture(e.date)&&e.availability?.[pid]==="no")
+  .sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+
+const tredsScore=(p)=>{
+  const keys=["teamwork","respect","enjoyment","discipline","sportsmanship"];
+  const v=keys.map(k=>p.behaviour?.[k]||0).filter(n=>n>0);
+  return v.length?{avg:v.reduce((a,b)=>a+b,0)/v.length,n:v.length}:null;
+};
+
+const dataHealth=(season)=>{
+  const ps=season?.players||[];
+  const evs=allEvents(season);
+  return{
+    noPositions:ps.filter(p=>!p.positions.length).length,
+    noPreferred:ps.filter(p=>!(p.preferred||[]).length).length,
+    noTreds:ps.filter(p=>!tredsScore(p)).length,
+    noSkills:ps.filter(p=>!SKILLS.some(sk=>p.competence?.[sk.key]>0)).length,
+    pastNoRegister:evs.filter(e=>!isFuture(e.date)&&!Object.keys(e.attendance||{}).length).length,
+    futureNoAvail:evs.filter(e=>isFuture(e.date)&&!Object.keys(e.availability||{}).length).length,
+    players:ps.length,events:evs.length,
+  };
+};
+
 const blankSeason=(name,pitchSize,playerNames)=>({id:uid(),name,pitchSize,players:playerNames.map(n=>newPlayer(n,false)),tournaments:[],activeTournament:null,events:[],combos:[]});
 const blankTournament=(name,date,location,pitchSize,numTeams,teamNames,squadPlayers)=>({id:uid(),name,date,location,pitchSize,numTeams,status:"roster",teams:Array.from({length:numTeams},(_,i)=>({id:uid(),name:teamNames[i]||`Team ${i+1}`,matches:[]})),roster:squadPlayers.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId:null,tournamentHalves:0}))});
-const migrateSeason=(s)=>{if(!s)return s;const s2={...s,players:(s.players||[]).map(migratePlayer),events:Array.isArray(s.events)?s.events:[],combos:Array.isArray(s.combos)?s.combos:[]};if(!s2.activeTournament)return s2;const t=s2.activeTournament;if(t.teams&&t.roster)return s2;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s2.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s2,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
+const migrateSeason=(s)=>{if(!s)return s;const s2={...s,players:(s.players||[]).map(migratePlayer),events:(Array.isArray(s.events)?s.events:[]).map(e=>({availability:{},attendance:{},type:'training',...e})),combos:Array.isArray(s.combos)?s.combos:[]};if(!s2.activeTournament)return s2;const t=s2.activeTournament;if(t.teams&&t.roster)return s2;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s2.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s2,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
 
 const Lbl=({children,mt=12})=><div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:5,marginTop:mt,fontFamily:"'Barlow Condensed',sans-serif"}}>{children}</div>;
 const Inp=({style,...p})=><input style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:16,width:"100%",outline:"none",fontFamily:"inherit",boxSizing:"border-box",...style}} {...p}/>;
@@ -605,7 +651,7 @@ function SeasonHome({season,players,onOpenTournament,onNewTournament,onSquad,onP
   return(
     <>
       <div style={{marginBottom:20}}><h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>{season.name}</h2><div style={{fontSize:12,color:C.muted,marginTop:2}}>{players.length} players · {season.tournaments.length} tournament{season.tournaments.length!==1?"s":""} archived</div></div>
-      <div style={{display:"flex",gap:10,marginBottom:22,flexWrap:"wrap"}}><PBtn style={{width:"auto",marginTop:0,padding:"10px 20px"}} onClick={onNewTournament}>+ New Tournament</PBtn><Ghost onClick={onSquad}>Manage Squad</Ghost><Ghost onClick={onPlayers}>Players &amp; Positions</Ghost><Ghost onClick={onTimeline}>Training &amp; Timeline</Ghost><Ghost onClick={onSeasonStats}>Season Stats</Ghost></div>
+      <div style={{display:"flex",gap:10,marginBottom:22,flexWrap:"wrap"}}><PBtn style={{width:"auto",marginTop:0,padding:"10px 20px"}} onClick={onNewTournament}>+ New Tournament</PBtn><Ghost onClick={onSeasonStats}>Season Stats</Ghost></div>
       {season.activeTournament&&<><SHead>Active Tournament</SHead><div style={{background:C.card,border:`1px solid ${C.lime}`,borderRadius:10,padding:18,marginBottom:20,cursor:"pointer"}} onClick={onOpenTournament}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime}}>{season.activeTournament.name}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{season.activeTournament.date} · {season.activeTournament.teams?.length||1} team{(season.activeTournament.teams?.length||1)!==1?"s":""} · {season.activeTournament.teams?.reduce((a,t)=>a+t.matches.length,0)||0} matches</div></div><span style={{color:C.lime,fontSize:20}}>›</span></div></div></>}
       {season.tournaments.length>0&&<><SHead>Past Tournaments</SHead><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10,marginBottom:22}}>{season.tournaments.map(t=><div key={t.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:14}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:C.amber,marginBottom:3}}>{t.name}</div><div style={{fontSize:12,color:C.muted}}>{t.date} · {t.teams?.length||1} team{(t.teams?.length||1)!==1?"s":""}</div></div>)}</div></>}
       <SHead>Season Game Time</SHead>
@@ -770,7 +816,13 @@ function PlayerProfile({player,players,season,updatePlayer,addCombo,removeCombo,
 
       <Card>
         <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>{p.name}{p.isGuest?" 👤":""}</h2>
-        <div style={{fontSize:12,color:C.muted,marginTop:4,lineHeight:1.7}}>
+        <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
+          <StatChip label="Halves" value={p.seasonHalves}/>
+          <StatChip label="Tournaments" value={tournamentsAttended(season,p.id)}/>
+          <StatChip label="Training" col={att.rate===null?"#444":att.rate>=80?C.lime:att.rate>=50?C.amber:C.red} value={att.rate===null?"—":att.rate+"%"}/>
+          <StatChip label="TREDS" col={C.blue} value={tredsScore(p)?tredsScore(p).avg.toFixed(1):"—"}/>
+        </div>
+        <div style={{fontSize:12,color:C.muted,marginTop:10,lineHeight:1.7,display:"none"}}>
           {p.seasonHalves} halves this season
           {p.primary?` · Primary: ${posLabel(p.primary)}`:""}
           {att.rate!==null?` · Training ${att.rate}% (${att.attended}/${att.counted})`:" · No training logged"}
@@ -800,6 +852,41 @@ function PlayerProfile({player,players,season,updatePlayer,addCombo,removeCombo,
             </div>
           </div>
         ))}
+      </Card>
+
+      <SHead>Player's Own Preference</SHead>
+      <Card>
+        <p style={{fontSize:12,color:C.muted,marginBottom:10,lineHeight:1.6}}>Where <strong style={{color:C.blue}}>they</strong> want to play. Kept separate from your view above — both matter, and they are often different.</p>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+          {POSITIONS.map(x=>{
+            const on=(p.preferred||[]).includes(x.key);
+            return(
+              <button key={x.key} onClick={()=>updatePlayer(p.id,{preferred:on?(p.preferred||[]).filter(k=>k!==x.key):[...(p.preferred||[]),x.key]})}
+                style={{padding:"8px 14px",borderRadius:6,fontSize:14,cursor:"pointer",fontFamily:"inherit",background:on?C.blue:"#2a2a2a",color:on?"#fff":C.soft,border:`1px solid ${on?C.blue:"#333"}`}}>
+                {on?"♥ ":""}{x.label}
+              </button>
+            );
+          })}
+        </div>
+        {(p.preferred||[]).length>0&&!(p.preferred||[]).some(k=>p.positions.includes(k))&&
+          <div style={{background:"#2a2010",border:`1px solid ${C.amber}`,borderRadius:6,padding:"9px 11px",fontSize:12,color:"#ffe099",marginTop:12}}>
+            They want a position you haven't marked them suited to. Worth a conversation about what would need to change.
+          </div>}
+      </Card>
+
+      <SHead>Availability Ahead</SHead>
+      <Card>
+        {upcomingUnavailable(season,p.id).length===0
+          ? <p style={{fontSize:13,color:C.muted}}>No known absences coming up. Record these on an event in the Diary.</p>
+          : <>
+              <p style={{fontSize:12,color:C.muted,marginBottom:10,lineHeight:1.6}}>Known absences — factor these in now rather than discovering them on the day.</p>
+              {upcomingUnavailable(season,p.id).map(e=>(
+                <div key={e.id} style={{display:"flex",justifyContent:"space-between",gap:8,padding:"7px 0",borderBottom:`1px solid ${C.border}`,fontSize:13}}>
+                  <span>{evType(e.type).icon} {e.title||evType(e.type).label}</span>
+                  <span style={{color:C.red,flexShrink:0}}>{e.date}</span>
+                </div>
+              ))}
+            </>}
       </Card>
 
       <SHead>Skills</SHead>
@@ -923,6 +1010,437 @@ function PlayerProfile({player,players,season,updatePlayer,addCombo,removeCombo,
       <Ghost onClick={onBack} style={{width:"100%",textAlign:"center"}}>← Back to Players</Ghost>
       {picker&&<ComboPicker player={p} players={players} existing={combos} onAdd={addCombo} onClose={()=>setPicker(false)}/>}
     </>
+  );
+}
+
+function StatChip({label,value,col}){
+  return(
+    <div style={{background:"#161616",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 10px",textAlign:"center",minWidth:64,flex:1}}>
+      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,color:col||C.text,lineHeight:1.1}}>{value}</div>
+      <div style={{fontSize:10,color:C.muted,marginTop:2}}>{label}</div>
+    </div>
+  );
+}
+
+function DiaryScreen({season,players,onOpenEvent,onAddEvent,onImport,onOpenTournament}){
+  const evs=allEvents(season);
+  const future=evs.filter(e=>isFuture(e.date)).sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+  const past=evs.filter(e=>!isFuture(e.date)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  const tourns=[...(season.tournaments||[]),...(season.activeTournament?[season.activeTournament]:[])]
+    .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+
+  const Row=({e})=>{
+    const t=evType(e.type);
+    const fut=isFuture(e.date);
+    const attended=players.filter(p=>["present","late"].includes(e.attendance?.[p.id])).length;
+    const marked=Object.keys(e.attendance||{}).length;
+    const yes=players.filter(p=>e.availability?.[p.id]==="yes").length;
+    const no=players.filter(p=>e.availability?.[p.id]==="no").length;
+    const asked=Object.keys(e.availability||{}).length;
+    return(
+      <div onClick={()=>onOpenEvent(e.id)} style={{display:"flex",gap:11,alignItems:"center",background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 13px",marginBottom:8,cursor:"pointer"}}>
+        <div style={{fontSize:19,flexShrink:0}}>{t.icon}</div>
+        <div style={{minWidth:0,flex:1}}>
+          <div style={{fontSize:15,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.title||t.label}</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2}}>{e.date}{e.location?` · ${e.location}`:""}</div>
+        </div>
+        <div style={{textAlign:"right",flexShrink:0}}>
+          {fut
+            ? (asked
+                ? <><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:17,fontWeight:900,color:C.lime}}>{yes}<span style={{color:C.muted,fontSize:13}}>/{players.length}</span></div><div style={{fontSize:9,color:no?C.red:C.muted}}>{no?`${no} unavailable`:"available"}</div></>
+                : <div style={{fontSize:10,color:C.amber}}>no availability yet</div>)
+            : (marked
+                ? <><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:17,fontWeight:900,color:C.lime}}>{attended}<span style={{color:C.muted,fontSize:13}}>/{players.length}</span></div><div style={{fontSize:9,color:C.muted}}>attended</div></>
+                : <div style={{fontSize:10,color:C.amber}}>no register</div>)}
+        </div>
+      </div>
+    );
+  };
+
+  return(
+    <>
+      <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900,color:C.lime,margin:"0 0 3px"}}>Season Diary</h2>
+      <div style={{fontSize:12,color:C.muted,marginBottom:16}}>{past.length} logged · {future.length} planned · {tourns.length} tournament{tourns.length!==1?"s":""}</div>
+
+      <div style={{display:"flex",gap:7,marginBottom:18,flexWrap:"wrap"}}>
+        {EV_TYPES.map(t=>(
+          <button key={t.key} onClick={()=>onAddEvent(t.key)} style={{flex:"1 1 30%",padding:"10px 8px",background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:7,color:C.soft,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+            {t.icon} Add {t.label.toLowerCase()}
+          </button>
+        ))}
+      </div>
+      <Ghost onClick={onImport} style={{width:"100%",textAlign:"center",marginBottom:22}}>📋 Import attendance code</Ghost>
+
+      {future.length>0&&<>
+        <SHead>Coming up</SHead>
+        {future.map(e=><Row key={e.id} e={e}/>)}
+        <div style={{height:14}}/>
+      </>}
+
+      <SHead>Already happened</SHead>
+      {past.length===0&&<Card><p style={{fontSize:13,color:C.muted}}>Nothing logged yet.</p></Card>}
+      {past.map(e=><Row key={e.id} e={e}/>)}
+
+      {tourns.length>0&&<>
+        <div style={{height:14}}/>
+        <SHead>Tournaments</SHead>
+        {tourns.map(t=>{
+          const att=(t.roster||[]).filter(r=>r.attending&&!r.ill).length;
+          return(
+            <div key={t.id} onClick={()=>onOpenTournament(t)} style={{display:"flex",gap:11,alignItems:"center",background:C.card,border:`1px solid ${t.status==="active"?C.lime:C.border}`,borderRadius:8,padding:"12px 13px",marginBottom:8,cursor:"pointer"}}>
+              <div style={{fontSize:19}}>🏆</div>
+              <div style={{minWidth:0,flex:1}}>
+                <div style={{fontSize:15,fontWeight:600,color:C.text}}>{t.name}</div>
+                <div style={{fontSize:11,color:C.muted,marginTop:2}}>{t.date}{t.status==="active"?" · active":""}</div>
+              </div>
+              <div style={{textAlign:"right"}}>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:17,fontWeight:900,color:C.lime}}>{att}</div>
+                <div style={{fontSize:9,color:C.muted}}>squad</div>
+              </div>
+            </div>
+          );
+        })}
+      </>}
+    </>
+  );
+}
+
+function EventScreen({event,players,patchEvent,deleteEvent,onBack,notify}){
+  const fut=isFuture(event.date);
+  const[tab,setTab]=useState(fut?"avail":"register");
+  const[confirmDel,setConfirmDel]=useState(false);
+  const att=event.attendance||{}, av=event.availability||{};
+  const t=evType(event.type);
+
+  const setAtt=(pid,st)=>patchEvent(event.id,{attendance:{...att,[pid]:att[pid]===st?undefined:st}});
+  const setAv=(pid,st)=>patchEvent(event.id,{availability:{...av,[pid]:av[pid]===st?undefined:st}});
+  const allAtt=st=>{const a={};players.forEach(p=>{a[p.id]=st;});patchEvent(event.id,{attendance:a});};
+  const allAv=st=>{const a={};players.forEach(p=>{a[p.id]=st;});patchEvent(event.id,{availability:a});};
+  const copyAvail=()=>{
+    const a={...att};
+    players.forEach(p=>{if(av[p.id]==="no")a[p.id]="excused";});
+    patchEvent(event.id,{attendance:a});
+    notify("Known absences marked excused ✓");
+  };
+
+  const sorted=[...players].sort((a,b)=>a.name.localeCompare(b.name));
+  const states=tab==="avail"?AVAIL:ATT_STATES;
+  const cur=tab==="avail"?av:att;
+  const setCur=tab==="avail"?setAv:setAtt;
+
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:"Diary",onClick:onBack},{label:event.title||t.label}]}/>
+      <Card>
+        <Lbl mt={0}>Title</Lbl>
+        <Inp value={event.title} onChange={e=>patchEvent(event.id,{title:e.target.value})}/>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+          <div style={{flex:1,minWidth:130}}><Lbl>Date</Lbl><Inp type="date" value={event.date} onChange={e=>patchEvent(event.id,{date:e.target.value})}/></div>
+          <div style={{flex:1,minWidth:130}}><Lbl>Location</Lbl><Inp placeholder="optional" value={event.location||""} onChange={e=>patchEvent(event.id,{location:e.target.value})}/></div>
+        </div>
+        <Lbl>Type</Lbl>
+        <div style={{display:"flex",gap:6}}>
+          {EV_TYPES.map(x=>(
+            <button key={x.key} onClick={()=>patchEvent(event.id,{type:x.key})} style={{flex:1,padding:"9px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:13,border:`1px solid ${event.type===x.key?x.col:"#333"}`,background:event.type===x.key?x.col:"#212121",color:event.type===x.key?"#111":C.soft,fontWeight:event.type===x.key?700:400}}>{x.icon} {x.label}</button>
+          ))}
+        </div>
+        <Lbl>Notes</Lbl>
+        <textarea value={event.notes||""} onChange={e=>patchEvent(event.id,{notes:e.target.value})} placeholder="What you worked on, anything worth remembering…"
+          style={{background:"#1c1c1c",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"10px 12px",fontSize:16,width:"100%",height:70,outline:"none",resize:"vertical",fontFamily:"inherit",boxSizing:"border-box"}}/>
+      </Card>
+
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        <button onClick={()=>setTab("avail")} style={{flex:1,padding:"11px",borderRadius:7,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,letterSpacing:0.5,border:`1px solid ${tab==="avail"?C.blue:"#333"}`,background:tab==="avail"?C.blue:"transparent",color:tab==="avail"?"#fff":C.soft}}>Availability</button>
+        <button onClick={()=>setTab("register")} style={{flex:1,padding:"11px",borderRadius:7,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,letterSpacing:0.5,border:`1px solid ${tab==="register"?C.grass:"#333"}`,background:tab==="register"?C.grass:"transparent",color:tab==="register"?"#fff":C.soft}}>Register</button>
+      </div>
+
+      <Card>
+        <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}}>
+          {states.map(st=>(
+            <StatChip key={st.key} label={st.label} col={st.col} value={players.filter(p=>cur[p.id]===st.key).length}/>
+          ))}
+          <StatChip label="Not set" col="#444" value={players.filter(p=>!cur[p.id]).length}/>
+        </div>
+        <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
+          {tab==="avail"
+            ? <><Ghost onClick={()=>allAv("yes")}>All available</Ghost><Ghost onClick={()=>allAv(null)}>Clear</Ghost></>
+            : <><Ghost onClick={()=>allAtt("present")}>All present</Ghost><Ghost onClick={copyAvail}>Excuse known absences</Ghost></>}
+        </div>
+        {sorted.map(p=>(
+          <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
+            <span style={{fontSize:14,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+            <div style={{display:"flex",gap:4,flexShrink:0}}>
+              {states.map(st=>(
+                <button key={st.key} onClick={()=>setCur(p.id,st.key)} title={st.label}
+                  style={{width:36,height:32,borderRadius:5,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:700,
+                    background:cur[p.id]===st.key?st.col:"#212121",color:cur[p.id]===st.key?"#111":"#555",
+                    border:`1px solid ${cur[p.id]===st.key?st.col:"#333"}`}}>{st.short}</button>
+              ))}
+            </div>
+          </div>
+        ))}
+        <p style={{fontSize:11,color:"#444",marginTop:10}}>
+          {tab==="avail"?"Record these weeks ahead so you can balance game time before the gap arrives.":"P present · L late · E excused (not counted) · A absent."}
+        </p>
+      </Card>
+
+      {confirmDel
+        ? <Card style={{border:`1px solid ${C.red}`}}>
+            <p style={{fontSize:13,color:C.soft,marginBottom:12}}>Delete this event and its records? Cannot be undone.</p>
+            <div style={{display:"flex",gap:10}}>
+              <Ghost onClick={()=>setConfirmDel(false)}>Cancel</Ghost>
+              <PBtn style={{marginTop:0,flex:1}} color={C.red} onClick={()=>{deleteEvent(event.id);onBack();notify("Event deleted");}}>Delete</PBtn>
+            </div>
+          </Card>
+        : <Ghost onClick={()=>setConfirmDel(true)} style={{color:C.red,borderColor:C.red}}>Delete this event</Ghost>}
+    </>
+  );
+}
+
+function SquadScreen({season,players,onOpenPlayer,onAssess,addPlayer,updatePlayer,notify}){
+  const[q,setQ]=useState("");
+  const[filt,setFilt]=useState("all");
+  const[sortBy,setSortBy]=useState("name");
+  const[adding,setAdding]=useState(false);
+  const[newName,setNewName]=useState("");
+  const[guest,setGuest]=useState(false);
+  const evs=allEvents(season).filter(e=>e.type==="training");
+
+  let list=players.filter(p=>!q||p.name.toLowerCase().includes(q.toLowerCase()));
+  if(filt!=="all") list=list.filter(p=>p.positions.includes(filt));
+  list=[...list].sort((a,b)=>{
+    if(sortBy==="training")return (attStats(evs,b.id).rate??-1)-(attStats(evs,a.id).rate??-1);
+    if(sortBy==="halves")return b.seasonHalves-a.seasonHalves;
+    return a.name.localeCompare(b.name);
+  });
+
+  return(
+    <>
+      <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900,color:C.lime,margin:"0 0 3px"}}>Squad</h2>
+      <div style={{fontSize:12,color:C.muted,marginBottom:14}}>{players.length} players</div>
+
+      <PBtn style={{marginTop:0,marginBottom:10}} color={C.blue} onClick={onAssess}>⚡ Rapid Assess</PBtn>
+
+      <Inp placeholder="Search…" value={q} onChange={e=>setQ(e.target.value)} style={{marginBottom:10}}/>
+
+      <div style={{display:"flex",gap:5,marginBottom:8,flexWrap:"wrap"}}>
+        <Pill active={filt==="all"} onClick={()=>setFilt("all")}>All</Pill>
+        {POSITIONS.map(x=><Pill key={x.key} active={filt===x.key} onClick={()=>setFilt(x.key)}>{x.short}</Pill>)}
+      </div>
+      <div style={{display:"flex",gap:5,marginBottom:14,flexWrap:"wrap",alignItems:"center"}}>
+        <span style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>Sort</span>
+        <Pill active={sortBy==="name"} onClick={()=>setSortBy("name")}>Name</Pill>
+        <Pill active={sortBy==="training"} onClick={()=>setSortBy("training")}>Training</Pill>
+        <Pill active={sortBy==="halves"} onClick={()=>setSortBy("halves")}>Halves</Pill>
+      </div>
+
+      <Card style={{padding:"4px 16px"}}>
+        {list.length===0&&<p style={{fontSize:13,color:C.muted,padding:"14px 0"}}>Nobody matches.</p>}
+        {list.map(p=>{
+          const a=attStats(evs,p.id);
+          const tn=tournamentsAttended(season,p.id);
+          const unavail=upcomingUnavailable(season,p.id).length;
+          return(
+            <div key={p.id} onClick={()=>onOpenPlayer(p.id)} style={{padding:"12px 0",borderBottom:`1px solid ${C.border}`,cursor:"pointer"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+                <span style={{fontSize:15,fontWeight:600,color:p.ill?C.muted:C.text,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {p.name}{p.isGuest?" 👤":""}{p.ill?" 🤒":""}
+                </span>
+                <span style={{color:C.muted,fontSize:17,flexShrink:0}}>›</span>
+              </div>
+              <div style={{display:"flex",gap:12,marginTop:5,flexWrap:"wrap",alignItems:"center"}}>
+                <span style={{fontSize:11,color:C.muted}}>🏃 <span style={{color:a.rate===null?"#444":a.rate>=80?C.lime:a.rate>=50?C.amber:C.red,fontWeight:700}}>{a.rate===null?"—":a.rate+"%"}</span></span>
+                <span style={{fontSize:11,color:C.muted}}>🏆 <span style={{color:C.text,fontWeight:700}}>{tn}</span></span>
+                <span style={{fontSize:11,color:C.muted}}>⏱ <span style={{color:C.text,fontWeight:700}}>{p.seasonHalves}</span> halves</span>
+                {unavail>0&&<span style={{fontSize:11,color:C.red}}>✕ {unavail} ahead</span>}
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:5}}>
+                {p.positions.length===0&&<span style={{fontSize:10,color:"#4a4a4a"}}>no positions set</span>}
+                {p.positions.map(k=><span key={k} style={{background:p.primary===k?C.amber:"#252525",color:p.primary===k?"#111":C.soft,border:`1px solid ${p.primary===k?C.amber:"#333"}`,borderRadius:4,padding:"1px 6px",fontSize:10,fontWeight:p.primary===k?700:400}}>{posShort(k)}</span>)}
+                {(p.preferred||[]).length>0&&<span style={{fontSize:10,color:C.blue,marginLeft:2}}>♥ {(p.preferred||[]).map(posShort).join(" ")}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+
+      {adding?(
+        <Card>
+          <Lbl mt={0}>Add player</Lbl>
+          <Inp placeholder="Name…" value={newName} onChange={e=>setNewName(e.target.value)}/>
+          <div style={{display:"flex",gap:6,marginTop:8}}>
+            <Pill active={!guest} onClick={()=>setGuest(false)}>Permanent</Pill>
+            <Pill active={guest} onClick={()=>setGuest(true)} col={C.blue}>Guest</Pill>
+          </div>
+          <div style={{display:"flex",gap:10,marginTop:12}}>
+            <Ghost onClick={()=>{setAdding(false);setNewName("");}}>Cancel</Ghost>
+            <PBtn style={{marginTop:0,flex:1}} disabled={!newName.trim()} onClick={()=>{addPlayer(newName,guest);setNewName("");setAdding(false);notify("Player added ✓");}}>Add</PBtn>
+          </div>
+        </Card>
+      ):<Ghost onClick={()=>setAdding(true)} style={{width:"100%",textAlign:"center",marginTop:12}}>+ Add player</Ghost>}
+    </>
+  );
+}
+
+function AnalysisScreen({season,players}){
+  const[filt,setFilt]=useState("all");
+  const[sortKey,setSortKey]=useState("name");
+  const[desc,setDesc]=useState(false);
+  const[cols,setCols]=useState(["training","tournaments","halves"]);
+  const evs=allEvents(season).filter(e=>e.type==="training");
+
+  const COLS=[
+    {key:"training",label:"Train %",get:p=>attStats(evs,p.id).rate,fmt:v=>v===null?"—":v+"%"},
+    {key:"sessions",label:"Sessions",get:p=>attStats(evs,p.id).attended,fmt:v=>v},
+    {key:"tournaments",label:"Tourns",get:p=>tournamentsAttended(season,p.id),fmt:v=>v},
+    {key:"halves",label:"Halves",get:p=>p.seasonHalves,fmt:v=>v},
+    {key:"treds",label:"TREDS",get:p=>tredsScore(p)?.avg??null,fmt:v=>v===null?"—":v.toFixed(1)},
+    {key:"combos",label:"Links",get:p=>combosFor(season,p.id).length,fmt:v=>v},
+    {key:"focus",label:"Focus",get:p=>p.focus.length,fmt:v=>v},
+    {key:"unavail",label:"Away",get:p=>upcomingUnavailable(season,p.id).length,fmt:v=>v},
+  ];
+  const active=COLS.filter(c=>cols.includes(c.key));
+
+  let rows=players.filter(p=>filt==="all"||p.positions.includes(filt));
+  rows=[...rows].sort((a,b)=>{
+    if(sortKey==="name")return desc?b.name.localeCompare(a.name):a.name.localeCompare(b.name);
+    const c=COLS.find(x=>x.key===sortKey);
+    const av=c.get(a)??-1, bv=c.get(b)??-1;
+    return desc?av-bv:bv-av;
+  });
+
+  const csv=()=>{
+    const head=["Name","Positions","Preferred",...active.map(c=>c.label)].join(",");
+    const body=rows.map(p=>[
+      '"'+p.name+'"',
+      '"'+p.positions.map(posLabel).join("; ")+'"',
+      '"'+(p.preferred||[]).map(posLabel).join("; ")+'"',
+      ...active.map(c=>{const v=c.get(p);return v===null||v===undefined?"":v;})
+    ].join(",")).join("\n");
+    const out=head+"\n"+body;
+    navigator.clipboard?.writeText(out);
+    return out;
+  };
+  const[copied,setCopied]=useState(false);
+
+  return(
+    <>
+      <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900,color:C.lime,margin:"0 0 3px"}}>Analysis</h2>
+      <div style={{fontSize:12,color:C.muted,marginBottom:14}}>{rows.length} of {players.length} players</div>
+
+      <SHead>Filter by position</SHead>
+      <div style={{display:"flex",gap:5,marginBottom:14,flexWrap:"wrap"}}>
+        <Pill active={filt==="all"} onClick={()=>setFilt("all")}>All</Pill>
+        {POSITIONS.map(x=><Pill key={x.key} active={filt===x.key} onClick={()=>setFilt(x.key)}>{x.short}</Pill>)}
+      </div>
+
+      <SHead>Columns</SHead>
+      <div style={{display:"flex",gap:5,marginBottom:14,flexWrap:"wrap"}}>
+        {COLS.map(c=>(
+          <Pill key={c.key} active={cols.includes(c.key)} onClick={()=>setCols(v=>v.includes(c.key)?v.filter(x=>x!==c.key):[...v,c.key])}>{c.label}</Pill>
+        ))}
+      </div>
+
+      <Card style={{padding:"6px 10px",overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+          <thead>
+            <tr>
+              <th onClick={()=>{setSortKey("name");setDesc(sortKey==="name"?!desc:false);}}
+                style={{textAlign:"left",padding:"8px 4px",color:sortKey==="name"?C.lime:C.muted,fontSize:10,textTransform:"uppercase",letterSpacing:0.5,cursor:"pointer",borderBottom:`1px solid ${C.border}`,position:"sticky",left:0,background:C.card}}>Name</th>
+              {active.map(c=>(
+                <th key={c.key} onClick={()=>{setSortKey(c.key);setDesc(sortKey===c.key?!desc:false);}}
+                  style={{textAlign:"right",padding:"8px 5px",color:sortKey===c.key?C.lime:C.muted,fontSize:10,textTransform:"uppercase",letterSpacing:0.5,cursor:"pointer",borderBottom:`1px solid ${C.border}`,whiteSpace:"nowrap"}}>
+                  {c.label}{sortKey===c.key?(desc?" ▲":" ▼"):""}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(p=>(
+              <tr key={p.id}>
+                <td style={{padding:"8px 4px",borderBottom:`1px solid #202020`,color:C.text,position:"sticky",left:0,background:C.card,whiteSpace:"nowrap"}}>{p.name}</td>
+                {active.map(c=>(
+                  <td key={c.key} style={{padding:"8px 5px",borderBottom:`1px solid #202020`,textAlign:"right",color:C.soft,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:14}}>{c.fmt(c.get(p))}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <Ghost onClick={()=>{csv();setCopied(true);setTimeout(()=>setCopied(false),2000);}} style={{width:"100%",textAlign:"center"}}>
+        {copied?"✓ Copied — paste into Sheets or Excel":"📋 Copy as spreadsheet (CSV)"}
+      </Ghost>
+
+      <div style={{height:16}}/>
+      <SHead>Data health</SHead>
+      <Card>
+        {(()=>{const h=dataHealth(season);
+          const items=[
+            ["Players with no positions set",h.noPositions,C.red],
+            ["Players with no preferred position",h.noPreferred,C.amber],
+            ["Players with no TREDS assessment",h.noTreds,C.amber],
+            ["Players with no skills rated",h.noSkills,C.amber],
+            ["Past events with no register",h.pastNoRegister,C.red],
+            ["Future events with no availability",h.futureNoAvail,C.amber],
+          ];
+          return items.map(([l,n,col])=>(
+            <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
+              <span style={{fontSize:13,color:n>0?C.text:C.muted}}>{l}</span>
+              <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:17,fontWeight:900,color:n>0?col:C.lime,flexShrink:0}}>{n===0?"✓":n}</span>
+            </div>
+          ));
+        })()}
+        <p style={{fontSize:11,color:"#444",marginTop:10}}>Gaps are shown rather than filled. An empty rating is honest; a guessed one is not.</p>
+      </Card>
+    </>
+  );
+}
+
+function MoreMenu({onClose,go,season,lastSaved}){
+  const Item=({icon,label,sub,onClick,col})=>(
+    <button onClick={()=>{onClose();onClick();}} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"13px 4px",background:"none",border:"none",borderBottom:`1px solid ${C.border}`,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+      <span style={{fontSize:18,width:24,flexShrink:0}}>{icon}</span>
+      <span style={{flex:1,minWidth:0}}>
+        <span style={{display:"block",fontSize:15,color:col||C.text}}>{label}</span>
+        {sub&&<span style={{display:"block",fontSize:11,color:C.muted,marginTop:1}}>{sub}</span>}
+      </span>
+      <span style={{color:C.muted,fontSize:16}}>›</span>
+    </button>
+  );
+  return(
+    <ModalWrap title="More" onClose={onClose}>
+      <Item icon="💾" label="Saved sessions" sub={lastSaved?`Auto-saved ${lastSaved}`:"Create a restore point"} onClick={()=>go("saves")}/>
+      <Item icon="📊" label="Season stats" sub="Fairness, results, history" onClick={()=>go("stats")}/>
+      <Item icon="🏆" label="New tournament" sub={season?.activeTournament?"End the current one first":"Start a festival"} onClick={()=>go("newTournament")}/>
+      <Item icon="↗" label="Export session" sub="Share with another coach" onClick={()=>go("export")}/>
+      <Item icon="↙" label="Import session" sub="Load a code" onClick={()=>go("import")}/>
+    </ModalWrap>
+  );
+}
+
+function TabBar({view,setTab,hasTournament}){
+  const TABS=[
+    {key:"diary",icon:"📅",label:"Diary",views:["diary","event"]},
+    {key:"squad",icon:"👥",label:"Squad",views:["squad","player","assess"]},
+    {key:"match",icon:"🏉",label:"Match",views:["home","tournament"]},
+    {key:"analysis",icon:"📈",label:"Analysis",views:["analysis"]},
+  ];
+  return(
+    <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:200,background:"rgba(18,18,18,0.98)",borderTop:`1px solid ${C.border}`,backdropFilter:"blur(8px)",display:"flex",paddingBottom:"env(safe-area-inset-bottom)"}}>
+      {TABS.map(t=>{
+        const on=t.views.includes(view);
+        return(
+          <button key={t.key} onClick={()=>setTab(t.key)} style={{flex:1,padding:"9px 2px 10px",background:"none",border:"none",cursor:"pointer",fontFamily:"inherit",display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+            <span style={{fontSize:18,opacity:on?1:0.45,position:"relative"}}>
+              {t.icon}
+              {t.key==="match"&&hasTournament&&<span style={{position:"absolute",top:-1,right:-5,width:7,height:7,borderRadius:4,background:C.lime}}/>}
+            </span>
+            <span style={{fontSize:10,color:on?C.lime:C.muted,fontWeight:on?700:400,letterSpacing:0.3}}>{t.label}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -1312,7 +1830,7 @@ function App(){
   const[showSaves,setShowSaves]=useState(false);
   const[lastSaved,setLastSaved]=useState(null);
   const[newT,setNewT]=useState({name:"",date:today(),location:"",pitchSize:"",numTeams:1,teamNames:["Team 1","Team 2","Team 3","Team 4"]});
-  const[startupSaves,setStartupSaves]=useState([]);const[selPlayerId,setSelPlayerId]=useState(null);const[selEventId,setSelEventId]=useState(null);const[showAttImport,setShowAttImport]=useState(false);
+  const[startupSaves,setStartupSaves]=useState([]);const[selPlayerId,setSelPlayerId]=useState(null);const[selEventId,setSelEventId]=useState(null);const[showAttImport,setShowAttImport]=useState(false);const[showMore,setShowMore]=useState(false);
   const[showStartup,setShowStartup]=useState(false);
 
   useEffect(()=>{
@@ -1327,6 +1845,18 @@ function App(){
   const save=useCallback((data)=>{const ok=lsSet(LS_KEY,data);if(ok)setLastSaved(fmtNow());},[]);
   const setS=useCallback((fn)=>{setSeason(prev=>{const next=typeof fn==="function"?fn(prev):{...prev,...fn};save(next);return next;});},[save]);
   const notify=useCallback((msg,type="ok")=>{const id=uid();setToast({msg,type,id});setTimeout(()=>setToast(t=>t?.id===id?null:t),2800);},[]);
+  const goTab=(t)=>{
+    setSelPlayerId(null);setSelEventId(null);
+    if(t==="diary")setView("diary");
+    else if(t==="squad")setView("squad");
+    else if(t==="analysis")setView("analysis");
+    else setView(season?.activeTournament?"tournament":"home");
+  };
+  const goMore=(k)=>{
+    if(k==="saves")setShowSaves(true);
+    else if(k==="stats")setView("stats");
+    else setModals(m=>({...m,[k]:true}));
+  };
   const openM=k=>setModals(m=>({...m,[k]:true}));
   const closeM=k=>setModals(m=>({...m,[k]:false}));
 
@@ -1451,26 +1981,18 @@ function App(){
         <div style={{maxWidth:980,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,cursor:view!=="setup"?"pointer":"default"}} onClick={()=>view!=="setup"&&setView("home")}>
             <span style={{fontSize:24}}>📋</span>
-            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v4.2 · rapid assess</div></div>
+            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v5.0 · diary · squad · analysis</div></div>
           </div>
           {view!=="setup"&&!showStartup&&(
-            <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
-              <Pill active={view==="home"} onClick={()=>setView("home")}>Season</Pill>
-              {activeTournament&&<Pill active={view==="tournament"} onClick={()=>setView("tournament")}>Tournament</Pill>}
-              <Pill active={view==="squad"} onClick={()=>setView("squad")}>Squad</Pill>
-              <Pill active={view==="players"||view==="player"} onClick={()=>{setSelPlayerId(null);setView("players");}}>Players</Pill>
-              <Pill active={view==="timeline"||view==="session"} onClick={()=>{setSelEventId(null);setView("timeline");}}>📅 Timeline</Pill>
-              <Pill onClick={()=>setShowSaves(true)} col={C.amber}>💾 Saves</Pill>
-              <Pill onClick={()=>openM("export")}>Export ↗</Pill>
-              <Pill onClick={()=>openM("import")}>Import ↙</Pill>
-              <Pill onClick={()=>openM("startFreshConfirm")} col={C.red}>🗑 Start Fresh</Pill>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
               {lastSaved&&<span style={{fontSize:10,color:C.muted}}>✓ {lastSaved}</span>}
+              <button onClick={()=>setShowMore(true)} style={{padding:"7px 13px",background:"#1f1f1f",border:`1px solid ${C.border}`,borderRadius:18,color:C.soft,fontSize:15,cursor:"pointer",fontFamily:"inherit",lineHeight:1}}>⋯</button>
             </div>
           )}
         </div>
       </header>
       {toast&&<div style={{position:"fixed",top:64,left:"50%",transform:"translateX(-50%)",padding:"9px 22px",borderRadius:6,color:"#fff",zIndex:999,fontSize:14,fontWeight:500,boxShadow:"0 4px 20px rgba(0,0,0,0.5)",whiteSpace:"nowrap",background:toast.type==="err"?C.red:C.grass,pointerEvents:"none"}}>{toast.msg}</div>}
-      <main style={{maxWidth:980,margin:"0 auto",padding:"24px 14px 100px"}}>
+      <main style={{maxWidth:980,margin:"0 auto",padding:"20px 14px 110px"}}>
         {showStartup&&(
           <div style={{display:"flex",justifyContent:"center",paddingTop:20}}>
             <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"32px 28px",width:"100%",maxWidth:500}}>
@@ -1485,13 +2007,14 @@ function App(){
         {view==="setup"&&!showStartup&&<SeasonSetupScreen onDone={handleSeasonStart} onLoadSaves={()=>setShowSaves(true)} onImportCode={(str)=>{const raw=dec(str.trim());if(!raw?.players||!raw?.name){notify("Invalid code","err");return;}const p=migrateSeason(raw);setSeason(p);save(p);setView("home");setLastSaved(fmtNow());notify("Session restored ✓");}}/>}
         {view==="home"&&season&&!showStartup&&<SeasonHome season={season} players={season.players} onOpenTournament={()=>setView("tournament")} onNewTournament={()=>openM("newTournament")} onSquad={()=>setView("squad")} onPlayers={()=>{setSelPlayerId(null);setView("players");}} onTimeline={()=>{setSelEventId(null);setView("timeline");}} onSeasonStats={()=>setView("stats")}/>}
         {view==="tournament"&&season&&activeTournament&&<TournamentView tournament={activeTournament} season={season} seasonPlayers={season.players} patchTournament={patchTournament} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onBack={(dest)=>setView(dest==="home"?"home":"tournament")} onArchive={()=>openM("archiveConfirm")}/>}
-        {view==="squad"&&season&&<SquadManager season={season} players={season.players} updatePlayer={updatePlayer} addPlayer={addPlayer} removePlayer={removePlayer} onBack={()=>setView("home")} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}}/>}
+        {view==="squadOld"&&season&&<SquadManager season={season} players={season.players} updatePlayer={updatePlayer} addPlayer={addPlayer} removePlayer={removePlayer} onBack={()=>setView("home")} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}}/>}
         {view==="stats"&&season&&<StatsView season={season} maxS={maxS} maxR={maxR} openM={openM} setView={setView}/>}
-        {view==="players"&&season&&<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} onBack={()=>setView("home")}/>}
-        {view==="assess"&&season&&<AssessScreen season={season} players={season.players} updatePlayer={updatePlayer} notify={notify} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("players")}/>}
-        {view==="player"&&season&&(()=>{const pl=season.players.find(x=>x.id===selPlayerId);return pl?<PlayerProfile player={pl} players={season.players} season={season} updatePlayer={updatePlayer} addCombo={addCombo} removeCombo={removeCombo} notify={notify} onBack={()=>{setSelPlayerId(null);setView("players");}} onOpenPlayer={id=>setSelPlayerId(id)}/>:<PlayersScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} onBack={()=>setView("home")}/>;})()}
-        {view==="timeline"&&season&&<TimelineScreen season={season} players={season.players} onOpenSession={id=>{setSelEventId(id);setView("session");}} onAddSession={()=>{const id=addEvent({});setSelEventId(id);setView("session");}} onImport={()=>setShowAttImport(true)} onBack={()=>setView("home")}/>}
-        {view==="session"&&season&&(()=>{const ev=(season.events||[]).find(x=>x.id===selEventId);return ev?<SessionScreen event={ev} players={season.players} patchEvent={patchEvent} deleteEvent={deleteEvent} notify={notify} onBack={()=>{setSelEventId(null);setView("timeline");}}/>:<TimelineScreen season={season} players={season.players} onOpenSession={id=>{setSelEventId(id);setView("session");}} onAddSession={()=>{const id=addEvent({});setSelEventId(id);setView("session");}} onImport={()=>setShowAttImport(true)} onBack={()=>setView("home")}/>;})()}
+        {(view==="squad"||view==="players")&&season&&<SquadScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} addPlayer={addPlayer} updatePlayer={updatePlayer} notify={notify}/>}
+        {view==="analysis"&&season&&<AnalysisScreen season={season} players={season.players}/>}
+        {view==="assess"&&season&&<AssessScreen season={season} players={season.players} updatePlayer={updatePlayer} notify={notify} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("squad")}/>}
+        {view==="player"&&season&&(()=>{const pl=season.players.find(x=>x.id===selPlayerId);return pl?<PlayerProfile player={pl} players={season.players} season={season} updatePlayer={updatePlayer} addCombo={addCombo} removeCombo={removeCombo} notify={notify} onBack={()=>{setSelPlayerId(null);setView("squad");}} onOpenPlayer={id=>setSelPlayerId(id)}/>:<SquadScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} addPlayer={addPlayer} updatePlayer={updatePlayer} notify={notify}/>;})()}
+        {(view==="diary"||view==="timeline")&&season&&<DiaryScreen season={season} players={season.players} onOpenEvent={id=>{setSelEventId(id);setView("event");}} onAddEvent={t=>{const id=addEvent({type:t,title:evType(t).label});setSelEventId(id);setView("event");}} onImport={()=>setShowAttImport(true)} onOpenTournament={t=>{if(t.status==="active")setView("tournament");else setView("stats");}}/>}
+        {(view==="event"||view==="session")&&season&&(()=>{const ev=(season.events||[]).find(x=>x.id===selEventId);return ev?<EventScreen event={ev} players={season.players} patchEvent={patchEvent} deleteEvent={deleteEvent} notify={notify} onBack={()=>{setSelEventId(null);setView("diary");}}/>:<DiaryScreen season={season} players={season.players} onOpenEvent={id=>{setSelEventId(id);setView("event");}} onAddEvent={t=>{const id=addEvent({type:t,title:evType(t).label});setSelEventId(id);setView("event");}} onImport={()=>setShowAttImport(true)} onOpenTournament={()=>setView("tournament")}/>;})()}
       </main>
       {modals.newTournament&&(
         <ModalWrap title="New Tournament" onClose={()=>closeM("newTournament")}>
@@ -1541,13 +2064,9 @@ function App(){
         </ModalWrap>
       )}
       {showAttImport&&season&&<AttendanceImport season={season} players={season.players} notify={notify} onApply={ev=>{const id=addEvent(ev);setSelEventId(id);setView("session");notify("Session created ✓");}} onClose={()=>setShowAttImport(false)}/>}
+      {showMore&&<MoreMenu onClose={()=>setShowMore(false)} go={goMore} season={season} lastSaved={lastSaved}/>}
       {showSaves&&<SavesManager season={season} onLoad={handleSavesLoad} onClose={()=>setShowSaves(false)} notify={notify}/>}
-      {season&&view!=="setup"&&!showStartup&&(
-        <div style={{position:"fixed",bottom:0,left:0,right:0,zIndex:150,background:"#1a1200",borderTop:"1px solid #5a3d00",padding:"7px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,flexWrap:"wrap"}}>
-          <span style={{fontSize:11,color:"#c8a050"}}>✓ Auto-saved · Hit <strong>💾 Saves</strong> to create a named restore point before closing.</span>
-          <button onClick={()=>setShowSaves(true)} style={{padding:"4px 12px",background:C.amber,border:"none",borderRadius:4,color:"#111",fontSize:12,fontWeight:700,cursor:"pointer",flexShrink:0}}>💾 Save Now</button>
-        </div>
-      )}
+      {season&&view!=="setup"&&!showStartup&&<TabBar view={view} hasTournament={!!activeTournament} setTab={goTab}/>}
     </div>
   );
 }
