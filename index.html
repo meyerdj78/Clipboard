@@ -1473,7 +1473,7 @@ function AssessScreen({season,players,updatePlayer,notify,onBack,onOpenPlayer}){
     <>
       <Breadcrumb crumbs={[{label:"Players",onClick:onBack},{label:"Rapid Assess"}]}/>
 
-      <Card style={{position:"sticky",top:54,zIndex:80}}>
+      <Card style={{position:"sticky",top:"calc(env(safe-area-inset-top) + 54px)",zIndex:80}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:10}}>
           <button onClick={()=>setIdx(i=>Math.max(0,i-1))} disabled={idx===0}
             style={{padding:"8px 12px",background:"transparent",border:`1px solid ${idx===0?"#222":C.border}`,borderRadius:5,color:idx===0?"#333":C.soft,fontSize:14,cursor:idx===0?"not-allowed":"pointer",fontFamily:"inherit"}}>←</button>
@@ -1977,11 +1977,11 @@ function App(){
   return(
     <div style={{minHeight:"100vh",background:C.night,color:C.text,fontFamily:"'Barlow',sans-serif"}}>
       <style>{` *{box-sizing:border-box;margin:0;padding:0} input,select,textarea,button{font-family:inherit} ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-thumb{background:#333;border-radius:2px}`}</style>
-      <header style={{position:"sticky",top:0,zIndex:100,background:"rgba(13,13,13,0.97)",borderBottom:`1px solid ${C.border}`,backdropFilter:"blur(8px)"}}>
+      <header style={{position:"sticky",top:0,zIndex:100,background:"rgba(13,13,13,0.97)",borderBottom:`1px solid ${C.border}`,backdropFilter:"blur(8px)",paddingTop:"env(safe-area-inset-top)"}}>
         <div style={{maxWidth:980,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,cursor:view!=="setup"?"pointer":"default"}} onClick={()=>view!=="setup"&&setView("home")}>
             <span style={{fontSize:24}}>📋</span>
-            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>The Clipboard · v5.0 · diary · squad · analysis</div></div>
+            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>v5.0 · diary · squad · analysis</div></div>
           </div>
           {view!=="setup"&&!showStartup&&(
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -1991,7 +1991,7 @@ function App(){
           )}
         </div>
       </header>
-      {toast&&<div style={{position:"fixed",top:64,left:"50%",transform:"translateX(-50%)",padding:"9px 22px",borderRadius:6,color:"#fff",zIndex:999,fontSize:14,fontWeight:500,boxShadow:"0 4px 20px rgba(0,0,0,0.5)",whiteSpace:"nowrap",background:toast.type==="err"?C.red:C.grass,pointerEvents:"none"}}>{toast.msg}</div>}
+      {toast&&<div style={{position:"fixed",top:"calc(env(safe-area-inset-top) + 64px)",left:"50%",transform:"translateX(-50%)",padding:"9px 22px",borderRadius:6,color:"#fff",zIndex:999,fontSize:14,fontWeight:500,boxShadow:"0 4px 20px rgba(0,0,0,0.5)",whiteSpace:"nowrap",background:toast.type==="err"?C.red:C.grass,pointerEvents:"none"}}>{toast.msg}</div>}
       <main style={{maxWidth:980,margin:"0 auto",padding:"20px 14px 110px"}}>
         {showStartup&&(
           <div style={{display:"flex",justifyContent:"center",paddingTop:20}}>
