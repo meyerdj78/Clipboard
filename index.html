@@ -779,6 +779,8 @@ function PlayerProfile({player,players,season,updatePlayer,addCombo,removeCombo,
   const[focusTxt,setFocusTxt]=useState("");
   const[picker,setPicker]=useState(false);
   const[openSnap,setOpenSnap]=useState(null);
+  const[renaming,setRenaming]=useState(false);
+  const[nameTxt,setNameTxt]=useState("");
   const p=player;
 
   const cyclePos=k=>{
@@ -815,7 +817,17 @@ function PlayerProfile({player,players,season,updatePlayer,addCombo,removeCombo,
       <Breadcrumb crumbs={[{label:"Players",onClick:onBack},{label:p.name}]}/>
 
       <Card>
-        <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0}}>{p.name}{p.isGuest?" 👤":""}</h2>
+        {renaming?(
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <Inp value={nameTxt} onChange={e=>setNameTxt(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&nameTxt.trim()){updatePlayer(p.id,{name:nameTxt.trim()});setRenaming(false);notify("Name updated ✓");}}}/>
+            <button onClick={()=>{if(nameTxt.trim()){updatePlayer(p.id,{name:nameTxt.trim()});setRenaming(false);notify("Name updated ✓");}}} style={{padding:"8px 13px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Save</button>
+            <button onClick={()=>{setRenaming(false);setNameTxt(p.name);}} style={{background:"none",border:"none",color:C.muted,fontSize:16,cursor:"pointer",flexShrink:0}}>✕</button>
+          </div>
+        ):(
+          <h2 onClick={()=>{setNameTxt(p.name);setRenaming(true);}} style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:C.lime,margin:0,cursor:"pointer"}}>
+            {p.name}{p.isGuest?" 👤":""} <span style={{fontSize:14,color:C.muted}}>✎</span>
+          </h2>
+        )}
         <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
           <StatChip label="Halves" value={p.seasonHalves}/>
           <StatChip label="Tournaments" value={tournamentsAttended(season,p.id)}/>
@@ -1682,10 +1694,11 @@ function AttendanceImport({season,players,onApply,onClose,notify}){
 
   const decode=()=>{
     const d=dec(raw.trim());
-    if(!d||d.k!=="attendance"||!Array.isArray(d.present)){notify("Not a valid attendance code","err");return;}
-    const present=matchSquad(d.present,players);
-    const absent=matchSquad(d.absent||[],players);
-    setParsed({date:d.date||today(),title:d.title||"Training",location:d.location||"",present,absent});
+    if(!d||(d.k!=="attendance"&&d.k!=="availability")){notify("Not a valid import code","err");return;}
+    const mode=d.k==="availability"?"availability":"attendance";
+    const present=matchSquad(d.present||d.yes||[],players);
+    const absent=matchSquad(d.absent||d.no||[],players);
+    setParsed({mode,date:d.date||today(),title:d.title||"Training",type:d.type||"training",location:d.location||"",present,absent});
   };
 
   const unmatched=parsed?[...parsed.present,...parsed.absent].filter(x=>!x.player):[];
@@ -1709,11 +1722,16 @@ function AttendanceImport({season,players,onApply,onClose,notify}){
             <div style={{fontSize:15,fontWeight:600,color:C.text}}>{parsed.title}</div>
             <div style={{fontSize:12,color:C.muted,marginTop:2}}>{parsed.date}{parsed.location?` · ${parsed.location}`:""}</div>
           </div>
-          <div style={{fontSize:11,color:C.lime,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>Present ({parsed.present.filter(x=>x.player).length})</div>
+          <div style={{background:parsed.mode==="availability"?"#10294f":"#16233f",border:`1px solid ${C.border}`,borderRadius:6,padding:"8px 11px",fontSize:12,color:C.soft,marginBottom:12}}>
+            {parsed.mode==="availability"
+              ?"This will fill in availability for a future session — who has said they can make it."
+              :"This will fill in the register — who actually turned up."}
+          </div>
+          <div style={{fontSize:11,color:C.lime,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>{parsed.mode==="availability"?"Available":"Present"} ({parsed.present.filter(x=>x.player).length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:12}}>
             {parsed.present.filter(x=>x.player).map(x=><span key={x.player.id} style={{background:"#10294f",border:`1px solid ${C.grass}`,borderRadius:5,padding:"3px 9px",fontSize:12,color:C.lime}}>{x.player.name}</span>)}
           </div>
-          <div style={{fontSize:11,color:C.red,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>Absent ({parsed.absent.filter(x=>x.player).length})</div>
+          <div style={{fontSize:11,color:C.red,textTransform:"uppercase",letterSpacing:1,marginBottom:6,fontFamily:"'Barlow Condensed',sans-serif"}}>{parsed.mode==="availability"?"Not available":"Absent"} ({parsed.absent.filter(x=>x.player).length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:12}}>
             {parsed.absent.filter(x=>x.player).map(x=><span key={x.player.id} style={{background:"#3d1416",border:`1px solid ${C.red}`,borderRadius:5,padding:"3px 9px",fontSize:12,color:"#ff9999"}}>{x.player.name}</span>)}
           </div>
@@ -1732,12 +1750,18 @@ function AttendanceImport({season,players,onApply,onClose,notify}){
           <div style={{display:"flex",gap:10}}>
             <Ghost onClick={()=>{setParsed(null);setRaw("");}}>← Back</Ghost>
             <PBtn style={{marginTop:0,flex:1}} onClick={()=>{
-              const attendance={};
-              parsed.present.forEach(x=>{if(x.player)attendance[x.player.id]="present";});
-              parsed.absent.forEach(x=>{if(x.player)attendance[x.player.id]="absent";});
-              onApply({type:"training",date:parsed.date,title:parsed.title,location:parsed.location,notes:"",attendance});
+              const map={};
+              if(parsed.mode==="availability"){
+                parsed.present.forEach(x=>{if(x.player)map[x.player.id]="yes";});
+                parsed.absent.forEach(x=>{if(x.player)map[x.player.id]="no";});
+                onApply({type:parsed.type,date:parsed.date,title:parsed.title,location:parsed.location,notes:"",availability:map,attendance:{}});
+              }else{
+                parsed.present.forEach(x=>{if(x.player)map[x.player.id]="present";});
+                parsed.absent.forEach(x=>{if(x.player)map[x.player.id]="absent";});
+                onApply({type:parsed.type,date:parsed.date,title:parsed.title,location:parsed.location,notes:"",attendance:map,availability:{}});
+              }
               onClose();
-            }}>Create session →</PBtn>
+            }}>Create {parsed.mode==="availability"?"session with availability":"register"} →</PBtn>
           </div>
         </>
       )}
@@ -1981,7 +2005,7 @@ function App(){
         <div style={{maxWidth:980,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,cursor:view!=="setup"?"pointer":"default"}} onClick={()=>view!=="setup"&&setView("home")}>
             <span style={{fontSize:24}}>📋</span>
-            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>v5.0 · diary · squad · analysis</div></div>
+            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>v5.2 · squad import</div></div>
           </div>
           {view!=="setup"&&!showStartup&&(
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
