@@ -208,6 +208,81 @@ const dataHealth=(season)=>{
   };
 };
 
+const REG_STATES=["present","late","excused","absent"];
+const AV_STATES=["yes","maybe","no"];
+
+const groupByState=(season,map,keys)=>{
+  const nm=id=>season.players.find(p=>p.id===id)?.name;
+  const out={}; keys.forEach(k=>out[k]=[]);
+  Object.entries(map||{}).forEach(([id,v])=>{const n=nm(id); if(n&&out[v])out[v].push(n);});
+  return out;
+};
+
+const eventCode=(season,ev)=>enc({
+  k:"event", type:ev.type, date:ev.date, title:ev.title||"", location:ev.location||"", notes:ev.notes||"",
+  register:groupByState(season,ev.attendance,REG_STATES),
+  availability:groupByState(season,ev.availability,AV_STATES),
+});
+
+const squadCode=(season)=>enc({
+  k:"squad", season:season.name, exported:today(),
+  players:(season.players||[]).map(p=>({
+    name:p.name, positions:p.positions||[], preferred:p.preferred||[], primary:p.primary??null,
+    behaviour:p.behaviour||{}, focus:p.focus||[], notes:p.notes||"",
+    assessments:p.assessments||[], isGuest:!!p.isGuest, left:!!p.left, leftDate:p.leftDate??null,
+  })),
+  combos:(season.combos||[]).map(c=>{
+    const a=season.players.find(x=>x.id===c.a), b=season.players.find(x=>x.id===c.b);
+    return (a&&b)?{a:a.name,b:b.name,type:c.type,note:c.note||""}:null;
+  }).filter(Boolean),
+});
+
+// A finished festival is a record to keep, not something to load back in, so
+// this is readable text rather than a code.
+const festivalRecord=(season,t)=>{
+  const nm=id=>season.players.find(p=>p.id===id)?.name??"?";
+  const L=[];
+  L.push(`${t.name} — ${t.date}${t.location?" · "+t.location:""}`);
+  L.push(`${(t.teams||[]).length} team(s), ${t.pitchSize} a side`);
+  L.push("");
+  (t.teams||[]).forEach(team=>{
+    L.push(`${team.name}`);
+    (team.matches||[]).forEach(m=>{
+      const sc=m.score||{us:0,them:0};
+      L.push(`  Match ${m.num} v ${m.opposition||"TBC"} — ${sc.us}-${sc.them}`);
+      (sc.tries||[]).forEach(tr=>L.push(`    try: ${tr.playerName}`));
+      (m.changes||[]).forEach(ch=>L.push(`    ${ch.half===1?"1st":"2nd"} half change: ${nm(ch.offId)} off, ${nm(ch.onId)} on`));
+    });
+    const mem=(t.roster||[]).filter(r=>r.teamId===team.id&&r.attending&&!r.ill);
+    L.push(`  Game time: ${mem.map(r=>`${nm(r.playerId)} ${r.tournamentHalves??0}`).join(", ")}`);
+    L.push("");
+  });
+  const missing=(t.roster||[]).filter(r=>!r.attending||r.ill);
+  if(missing.length)L.push(`Not available: ${missing.map(r=>nm(r.playerId)).join(", ")}`);
+  return L.join("\n");
+};
+
+const normaliseImport=(d)=>{
+  if(!d||typeof d!=="object")return null;
+  if(d.k==="squad")return{kind:"squad",data:d};
+  if(d.players&&d.name&&!d.k)return{kind:"season",data:d};
+  if(d.k==="season")return{kind:"season",data:d};
+  const blank=k=>{const o={};k.forEach(x=>o[x]=[]);return o;};
+  if(d.k==="event")return{kind:"event",data:{
+    type:d.type||"training",date:d.date||today(),title:d.title||"",location:d.location||"",notes:d.notes||"",
+    register:{...blank(REG_STATES),...(d.register||{})},
+    availability:{...blank(AV_STATES),...(d.availability||{})}}};
+  if(d.k==="attendance")return{kind:"event",data:{
+    type:d.type||"training",date:d.date||today(),title:d.title||"Training",location:d.location||"",notes:"",
+    register:{...blank(REG_STATES),present:d.present||[],absent:d.absent||[]},
+    availability:blank(AV_STATES)}};
+  if(d.k==="availability")return{kind:"event",data:{
+    type:d.type||"training",date:d.date||today(),title:d.title||"Training",location:d.location||"",notes:"",
+    register:blank(REG_STATES),
+    availability:{...blank(AV_STATES),yes:d.yes||d.present||[],no:d.no||d.absent||[]}}};
+  return null;
+};
+
 const blankSeason=(name,pitchSize,playerNames)=>({id:uid(),name,pitchSize,players:playerNames.map(n=>newPlayer(n,false)),tournaments:[],activeTournament:null,events:[],combos:[]});
 const blankTournament=(name,date,location,pitchSize,numTeams,teamNames,squadPlayers,avail={})=>({id:uid(),name,date,location,pitchSize,numTeams,status:"roster",teams:Array.from({length:numTeams},(_,i)=>({id:uid(),name:teamNames[i]||`Team ${i+1}`,matches:[]})),roster:squadPlayers.filter(p=>!p.left).map(p=>({playerId:p.id,attending:avail[p.id]!=="no",ill:p.ill||false,teamId:null,tournamentHalves:0}))});
 const migrateSeason=(s)=>{if(!s)return s;const s2={...s,players:(s.players||[]).map(migratePlayer),events:(Array.isArray(s.events)?s.events:[]).map(e=>({availability:{},attendance:{},type:'training',...e})),combos:Array.isArray(s.combos)?s.combos:[]};if(!s2.activeTournament)return s2;const t=s2.activeTournament;if(t.teams&&t.roster)return s2;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s2.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s2,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
@@ -294,7 +369,7 @@ function TeamAssignScreen({tournament,seasonPlayers,onUpdate,onProceed}){
           </div>
         </Card>
       )}
-      <PBtn disabled={unassigned.length>0} onClick={onProceed}>{unassigned.length>0?`Assign all players first (${unassigned.length} remaining)`:"Start Tournament →"}</PBtn>
+      <PBtn disabled={unassigned.length>0} onClick={onProceed}>{unassigned.length>0?`Assign all players first (${unassigned.length} remaining)`:"Start Festival →"}</PBtn>
     </>
   );
 }
@@ -560,7 +635,7 @@ function TournamentView({tournament,season,seasonPlayers,patchTournament,patchMa
           <button onClick={()=>patchTournament({...tournament,status:"roster"})} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,color:C.soft,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✏ Attendance</button>
           <button onClick={()=>patchTournament({...tournament,status:"assign"})} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,color:C.soft,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✏ Teams</button>
           {tournament.teams.length>1&&<button onClick={()=>setShowMoveModal(true)} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.blue}`,borderRadius:6,color:C.blue,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>⇄ Move Players</button>}
-          <button onClick={onArchive} style={{padding:"8px 14px",background:"transparent",border:`2px solid ${C.amber}`,borderRadius:6,color:C.amber,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif"}}>🏁 End Tournament</button>
+          <button onClick={onArchive} style={{padding:"8px 14px",background:"transparent",border:`2px solid ${C.amber}`,borderRadius:6,color:C.amber,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif"}}>🏁 End Festival</button>
         </div>
       </div>
       {absent.length>0&&<div style={{background:"#101b33",border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",marginBottom:14,display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}><span style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,flexShrink:0}}>Absent today:</span>{absent.map(r=>{const p=seasonPlayers.find(x=>x.id===r.playerId);return p?<span key={p.id} style={{fontSize:12,color:C.muted,opacity:0.6}}>{p.name}{r.ill?" 🤒":""}</span>:null;})}</div>}
@@ -575,7 +650,7 @@ function TournamentView({tournament,season,seasonPlayers,patchTournament,patchMa
           </div>
         );})}
       </div>
-      <SHead>Game Time This Tournament</SHead>
+      <SHead>Game Time This Festival</SHead>
       <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(tournament.teams.length,2)},1fr)`,gap:12,marginBottom:22}}>
         {tournament.teams.map(team=>{const members=attending.filter(r=>r.teamId===team.id);const maxT=Math.max(...members.map(r=>r.tournamentHalves??0),1);return(
           <Card key={team.id} style={{marginBottom:0}}>
@@ -599,7 +674,7 @@ function SavesManager({season,onLoad,onClose,notify}){
   const doLoad=(slot)=>{const data=lsGet(`clipboard_save_${slot.id}`);if(!data?.players){notify("Save not found","err");return;}onLoad(data);onClose();notify(`"${slot.name}" loaded ✓`);};
   return(
     <ModalWrap title="Saved Sessions" onClose={onClose} wide>
-      {season&&<div style={{background:"#101b33",border:`1px solid ${C.border}`,borderRadius:8,padding:14,marginBottom:20}}><div style={{fontSize:12,color:C.lime,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>💾 Save Current Session</div><div style={{display:"flex",gap:8}}><Inp placeholder="e.g. Before next tournament" value={saveName} onChange={e=>setSaveName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")doSave();}}/><button onClick={doSave} style={{padding:"8px 16px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Save Now</button></div><div style={{fontSize:11,color:C.muted,marginTop:6}}>{slots.length}/{MAX_SLOTS} slots</div></div>}
+      {season&&<div style={{background:"#101b33",border:`1px solid ${C.border}`,borderRadius:8,padding:14,marginBottom:20}}><div style={{fontSize:12,color:C.lime,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>💾 Save Current Session</div><div style={{display:"flex",gap:8}}><Inp placeholder="e.g. Before the next festival" value={saveName} onChange={e=>setSaveName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")doSave();}}/><button onClick={doSave} style={{padding:"8px 16px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Save Now</button></div><div style={{fontSize:11,color:C.muted,marginTop:6}}>{slots.length}/{MAX_SLOTS} slots</div></div>}
       <div style={{fontSize:12,color:C.muted,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:10}}>Saved Sessions</div>
       {loading&&<p style={{color:C.muted,fontSize:13}}>Loading…</p>}
       {!loading&&slots.length===0&&<p style={{color:C.muted,fontSize:13}}>No saves yet.</p>}
@@ -626,7 +701,7 @@ function SeasonSetupScreen({onDone,onLoadSaves,onImportCode}){
       <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"32px 28px",width:"100%",maxWidth:500}}>
         <div style={{fontSize:36,textAlign:"center",marginBottom:6}}>📋</div>
         <h1 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:34,fontWeight:900,textAlign:"center",color:C.lime,letterSpacing:2,marginBottom:4}}>The Clipboard</h1>
-        <p style={{textAlign:"center",color:C.muted,fontSize:13,marginBottom:24}}>Season · Tournament · Match · Fair game time for every kid</p>
+        <p style={{textAlign:"center",color:C.muted,fontSize:13,marginBottom:24}}>Season · Festival · Match · Fair game time for every kid</p>
         <div style={{background:"#10294f",border:`1px solid ${C.lime}`,borderRadius:8,padding:16,marginBottom:24}}>
           <div style={{fontSize:12,color:C.lime,fontFamily:"'Barlow Condensed',sans-serif",textTransform:"uppercase",letterSpacing:1,marginBottom:8}}>↙ Restore from Export Code</div>
           {!showImport?<button onClick={()=>setShowImport(true)} style={{width:"100%",padding:"10px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:1}}>Paste Export Code →</button>:<><textarea value={importStr} onChange={e=>setImportStr(e.target.value)} placeholder="Paste your export code here…" style={{background:"#0b1424",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:11,width:"100%",height:100,outline:"none",resize:"none",fontFamily:"monospace",boxSizing:"border-box"}}/><button onClick={()=>onImportCode(importStr)} style={{width:"100%",padding:"10px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:1,marginTop:8}}>Load Session →</button></>}
@@ -656,10 +731,10 @@ function SeasonHome({season,players,onOpenTournament,onNewTournament,onStartFrom
       <div style={{display:"flex",gap:10,marginBottom:22,flexWrap:"wrap"}}><Ghost onClick={onSeasonStats}>Season Stats</Ghost></div>
             {!season.activeTournament&&(
         <>
-          <SHead>Start a tournament</SHead>
+          <SHead>Run a festival</SHead>
           <Card>
             <p style={{fontSize:13,color:C.soft,marginBottom:12,lineHeight:1.6}}>
-              Tournaments are started from a festival in the Diary, so the date, location and availability only get entered once.
+              Festivals are planned in the Diary. Pick one to set up teams and matches — the date, location and availability come with it.
             </p>
             {(() => {
               const fests=(season.events||[]).filter(e=>e.type==="festival"&&!e.tournamentId)
@@ -671,15 +746,15 @@ function SeasonHome({season,players,onOpenTournament,onNewTournament,onStartFrom
                     <div style={{fontSize:15,fontWeight:600,color:C.text}}>{e.title||"Festival"}</div>
                     <div style={{fontSize:11,color:C.muted,marginTop:2}}>{e.date}{e.location?` · ${e.location}`:""}</div>
                   </div>
-                  <button onClick={()=>onStartFromEvent(e)} style={{padding:"8px 15px",background:C.lime,border:"none",borderRadius:6,color:"#111",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0,fontFamily:"inherit"}}>Start</button>
+                  <button onClick={()=>onStartFromEvent(e)} style={{padding:"8px 15px",background:C.lime,border:"none",borderRadius:6,color:"#111",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0,fontFamily:"inherit"}}>Set up</button>
                 </div>
               ));
             })()}
           </Card>
         </>
       )}
-{season.activeTournament&&<><SHead>Active Tournament</SHead><div style={{background:C.card,border:`1px solid ${C.lime}`,borderRadius:10,padding:18,marginBottom:20,cursor:"pointer"}} onClick={onOpenTournament}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime}}>{season.activeTournament.name}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{season.activeTournament.date} · {season.activeTournament.teams?.length||1} team{(season.activeTournament.teams?.length||1)!==1?"s":""} · {season.activeTournament.teams?.reduce((a,t)=>a+t.matches.length,0)||0} matches</div></div><span style={{color:C.lime,fontSize:20}}>›</span></div></div></>}
-      {season.tournaments.length>0&&<><SHead>Past Tournaments</SHead><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10,marginBottom:22}}>{season.tournaments.map(t=><div key={t.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:14}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:C.amber,marginBottom:3}}>{t.name}</div><div style={{fontSize:12,color:C.muted}}>{t.date} · {t.teams?.length||1} team{(t.teams?.length||1)!==1?"s":""}</div></div>)}</div></>}
+{season.activeTournament&&<><SHead>Live Festival</SHead><div style={{background:C.card,border:`1px solid ${C.lime}`,borderRadius:10,padding:18,marginBottom:20,cursor:"pointer"}} onClick={onOpenTournament}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime}}>{season.activeTournament.name}</div><div style={{fontSize:12,color:C.muted,marginTop:2}}>{season.activeTournament.date} · {season.activeTournament.teams?.length||1} team{(season.activeTournament.teams?.length||1)!==1?"s":""} · {season.activeTournament.teams?.reduce((a,t)=>a+t.matches.length,0)||0} matches</div></div><span style={{color:C.lime,fontSize:20}}>›</span></div></div></>}
+      {season.tournaments.length>0&&<><SHead>Past Festivals</SHead><div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(200px,1fr))",gap:10,marginBottom:22}}>{season.tournaments.map(t=><div key={t.id} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:8,padding:14}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:C.amber,marginBottom:3}}>{t.name}</div><div style={{fontSize:12,color:C.muted}}>{t.date} · {t.teams?.length||1} team{(t.teams?.length||1)!==1?"s":""}</div></div>)}</div></>}
       <SHead>Season Game Time</SHead>
       <Card>{[...players].sort((a,b)=>a.seasonHalves-b.seasonHalves).map(p=>{const fs=fairScore(p,maxS,maxR);return <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:9}}><span style={{width:110,fontSize:13,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",opacity:p.ill?0.35:1}}>{p.name}{p.isGuest?" 👤":""}{p.ill?" 🤒":""}</span><div style={{flex:1}}><FBar score={Math.max(fs,0)}/></div><span style={{width:55,textAlign:"right",fontSize:11,color:C.muted,flexShrink:0,fontFamily:"'Barlow Condensed',sans-serif"}}>{p.seasonHalves} hlvs</span></div>;})}</Card>
     </>
@@ -705,7 +780,7 @@ function SquadManager({season,players,updatePlayer,addPlayer,removePlayer,onBack
           </div>
         );})}
         <div style={{marginTop:16,display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-          <div><Lbl mt={0}>Add guest (this tournament only)</Lbl><div style={{display:"flex",gap:6}}><Inp placeholder="Guest name…" value={gName} onChange={e=>setGName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&gName.trim()){addPlayer(gName,true);setGName("");}}}/><button onClick={()=>{if(gName.trim()){addPlayer(gName,true);setGName("");}}} style={{padding:"8px 12px",background:C.blue,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Add</button></div></div>
+          <div><Lbl mt={0}>Add guest (this festival only)</Lbl><div style={{display:"flex",gap:6}}><Inp placeholder="Guest name…" value={gName} onChange={e=>setGName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&gName.trim()){addPlayer(gName,true);setGName("");}}}/><button onClick={()=>{if(gName.trim()){addPlayer(gName,true);setGName("");}}} style={{padding:"8px 12px",background:C.blue,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Add</button></div></div>
           <div><Lbl mt={0}>Add permanent player</Lbl><div style={{display:"flex",gap:6}}><Inp placeholder="Player name…" value={pName} onChange={e=>setPName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&pName.trim()){addPlayer(pName,false);setPName("");}}}/><button onClick={()=>{if(pName.trim()){addPlayer(pName,false);setPName("");}}} style={{padding:"8px 12px",background:C.grass,border:"none",borderRadius:6,color:"#fff",fontSize:13,fontWeight:700,cursor:"pointer",flexShrink:0}}>Add</button></div></div>
         </div>
       </Card>
@@ -727,8 +802,8 @@ function StatsView({season,maxS,maxR,openM,setView}){
       {done.length>0&&<><SHead>Season Record</SHead><Card><div style={{display:"flex",gap:16,flexWrap:"wrap",marginBottom:topScorers.length>0?14:0}}>{[["Won",w,C.lime],["Drawn",d,C.amber],["Lost",l,C.red],["For",tf,C.lime],["Against",ta,C.amber],["Matches",done.length,C.text]].map(([lbl,val,col])=><div key={lbl} style={{textAlign:"center"}}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:32,fontWeight:900,color:col}}>{val}</div><div style={{fontSize:11,color:C.muted}}>{lbl}</div></div>)}</div>{topScorers.length>0&&<><div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:8,fontFamily:"'Barlow Condensed',sans-serif"}}>Season Try Scorers</div>{topScorers.map(([pid,count],i)=><div key={pid} style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}><span style={{width:20,fontSize:11,color:C.muted,textAlign:"right",flexShrink:0}}>{i+1}</span><span style={{flex:1,fontSize:13}}>{season.players.find(p=>p.id===pid)?.name||"?"}</span><span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:C.lime}}>{count} {count===1?"try":"tries"}</span></div>)}</>}</Card></>}
       <SHead>Fairness Rankings</SHead>
       <Card>{[...season.players].sort((a,b)=>fairScore(b,maxS,maxR)-fairScore(a,maxS,maxR)).map((p,i)=>{const fs=fairScore(p,maxS,maxR);return <div key={p.id} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}><span style={{width:22,fontSize:12,color:C.muted,textAlign:"right",flexShrink:0}}>{i+1}</span><span style={{width:120,fontSize:13,flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}{p.isGuest?" 👤":""}{p.ill?" 🤒":""}</span><div style={{flex:1}}><FBar score={Math.max(fs,0)}/></div><span style={{width:55,textAlign:"right",fontSize:11,color:C.muted,flexShrink:0}}>{p.seasonHalves} hlvs</span></div>;})}</Card>
-      <SHead>Tournament History</SHead>
-      {season.tournaments.length===0&&<p style={{color:C.muted,fontSize:13}}>No archived tournaments yet.</p>}
+      <SHead>Festival History</SHead>
+      {season.tournaments.length===0&&<p style={{color:C.muted,fontSize:13}}>No festivals played yet.</p>}
       {season.tournaments.map(t=><Card key={t.id}><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,color:C.amber,marginBottom:4}}>{t.name}</div><div style={{fontSize:12,color:C.muted,marginBottom:12}}>{t.date} · {t.teams?.length||1} team{(t.teams?.length||1)!==1?"s":""}</div>{t.playerSnapshot&&<div style={{display:"flex",flexWrap:"wrap",gap:5}}>{t.playerSnapshot.map(p=><div key={p.id} style={{background:"#1d2b4a",border:"1px solid #35486b",borderRadius:5,padding:"3px 9px",fontSize:12,color:C.soft}}>{p.name} <span style={{color:C.lime,fontWeight:700}}>{p.seasonHalves}</span></div>)}</div>}</Card>)}
       <Ghost onClick={()=>openM("resetConfirm")} style={{color:C.red,borderColor:C.red,marginTop:8}}>⚠ Full Season Reset</Ghost>
     </>
@@ -856,7 +931,7 @@ function PlayerProfile({player,players,season,updatePlayer,setPlayerLeft,addComb
         )}
         <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap"}}>
           <StatChip label="Halves" value={p.seasonHalves}/>
-          <StatChip label="Tournaments" value={tournamentsAttended(season,p.id)}/>
+          <StatChip label="Festivals" value={tournamentsAttended(season,p.id)}/>
           <StatChip label="Training" col={att.rate===null?"#8296b2":att.rate>=80?C.lime:att.rate>=50?C.amber:C.red} value={att.rate===null?"—":att.rate+"%"}/>
           <StatChip label="TREDS" col={C.blue} value={tredsScore(p)?tredsScore(p).avg.toFixed(1):"—"}/>
         </div>
@@ -1042,12 +1117,119 @@ function PlayerProfile({player,players,season,updatePlayer,setPlayerLeft,addComb
   );
 }
 
-function StatChip({label,value,col}){
+function StatChip({label,value,col,onClick,active}){
   return(
-    <div style={{background:"#101b33",border:`1px solid ${C.border}`,borderRadius:8,padding:"8px 10px",textAlign:"center",minWidth:64,flex:1}}>
+    <div onClick={onClick} style={{background:active?"#10294f":"#101b33",border:`1px solid ${active?(col||C.lime):C.border}`,borderRadius:8,padding:"8px 10px",textAlign:"center",minWidth:64,flex:1,cursor:onClick?"pointer":"default"}}>
       <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,color:col||C.text,lineHeight:1.1}}>{value}</div>
       <div style={{fontSize:10,color:C.muted,marginTop:2}}>{label}</div>
     </div>
+  );
+}
+
+function CodeModal({title,subtitle,code,onClose,notify,plain}){
+  return(
+    <ModalWrap title={title} onClose={onClose} wide>
+      {subtitle&&<p style={{fontSize:13,color:C.soft,marginBottom:12,lineHeight:1.6}}>{subtitle}</p>}
+      <textarea readOnly value={code} onFocus={e=>e.target.select()}
+        style={{background:"#0b1424",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"9px 11px",
+          fontSize:11,width:"100%",height:plain?220:150,wordBreak:"break-all",outline:"none",resize:"vertical",
+          fontFamily:"monospace",boxSizing:"border-box",lineHeight:1.45}}/>
+      <div style={{fontSize:11,color:"#8296b2",marginTop:6}}>{code.length.toLocaleString()} characters</div>
+      <PBtn onClick={()=>{navigator.clipboard?.writeText(code);notify("Copied ✓");}}>Copy to clipboard</PBtn>
+    </ModalWrap>
+  );
+}
+
+function ExportChooser({season,onClose,notify}){
+  const[show,setShow]=useState(null);
+  const evs=[...(season.events||[])].sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  const tours=[...(season.tournaments||[]),...(season.activeTournament?[season.activeTournament]:[])];
+
+  if(show) return <CodeModal {...show} notify={notify} onClose={()=>setShow(null)}/>;
+
+  const Item=({icon,label,sub,onClick})=>(
+    <button onClick={onClick} style={{display:"flex",alignItems:"center",gap:12,width:"100%",padding:"13px 4px",
+      background:"none",border:"none",borderBottom:`1px solid ${C.border}`,cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+      <span style={{fontSize:18,width:24,flexShrink:0}}>{icon}</span>
+      <span style={{flex:1,minWidth:0}}>
+        <span style={{display:"block",fontSize:15,color:C.text}}>{label}</span>
+        <span style={{display:"block",fontSize:11,color:C.muted,marginTop:1}}>{sub}</span>
+      </span>
+      <span style={{color:C.muted,fontSize:16}}>›</span>
+    </button>
+  );
+
+  return(
+    <ModalWrap title="Export a Code" onClose={onClose} wide>
+      <p style={{fontSize:12,color:C.muted,marginBottom:14,lineHeight:1.6}}>
+        Codes contain player names. Keep them in a note or an email — never in the public repository.
+      </p>
+      <Item icon="📦" label="Everything" sub="The whole season — the complete backup"
+        onClick={()=>setShow({title:"Whole Season",code:enc(season),
+          subtitle:"Restores everything exactly as it is now. Paste into ⋯ → Import."})}/>
+      <Item icon="👥" label="Squad &amp; assessments" sub={`${(season.players||[]).length} players, positions, TREDS, notes, combinations`}
+        onClick={()=>setShow({title:"Squad & Assessments",code:squadCode(season),
+          subtitle:"Player records only — no attendance, no game time. Merges into any season by name, so it also carries the squad forward to next season."})}/>
+      <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,margin:"16px 0 8px",fontFamily:"'Barlow Condensed',sans-serif"}}>A single event</div>
+      {evs.length===0&&<p style={{fontSize:13,color:C.muted}}>Nothing in the Diary yet.</p>}
+      <div style={{maxHeight:200,overflowY:"auto"}}>
+        {evs.map(e=>(
+          <Item key={e.id} icon={evType(e.type).icon} label={e.title||evType(e.type).label}
+            sub={`${e.date} · ${Object.keys(e.attendance||{}).length} in register, ${Object.keys(e.availability||{}).length} availability`}
+            onClick={()=>setShow({title:e.title||"Event",code:eventCode(season,e),
+              subtitle:"Register and availability for this one event. Importing it adds to a matching event rather than replacing it."})}/>
+        ))}
+      </div>
+      {tours.length>0&&<>
+        <div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,margin:"16px 0 8px",fontFamily:"'Barlow Condensed',sans-serif"}}>Festival record (readable text)</div>
+        {tours.map(t=>(
+          <Item key={t.id} icon="🏉" label={t.name} sub={`${t.date} · scores, tries, changes, game time`}
+            onClick={()=>setShow({title:t.name,code:festivalRecord(season,t),plain:true,
+              subtitle:"A written record to keep or paste into a report. This is not a code and cannot be imported — the whole-season export already contains the festival."})}/>
+        ))}
+      </>}
+    </ModalWrap>
+  );
+}
+
+function SquadImport({season,onApply,onClose,notify}){
+  const[raw,setRaw]=useState("");
+  const[parsed,setParsed]=useState(null);
+  const decode=()=>{
+    const n=normaliseImport(dec(raw.trim()));
+    if(!n||n.kind!=="squad"){notify("Not a squad code","err");return;}
+    setParsed(n.data);
+  };
+  const matched=parsed?matchSquad(parsed.players.map(p=>p.name),season.players):[];
+  const known=matched.filter(m=>m.player).length;
+  const fresh=matched.filter(m=>!m.player).length;
+  return(
+    <ModalWrap title="Import Squad" onClose={onClose} wide>
+      {!parsed?(
+        <>
+          <p style={{fontSize:13,color:C.soft,marginBottom:12,lineHeight:1.6}}>Paste a squad code. Nothing changes until you have seen the preview.</p>
+          <textarea value={raw} onChange={e=>setRaw(e.target.value)} placeholder="Paste squad code…"
+            style={{background:"#0b1424",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:11,width:"100%",height:130,outline:"none",resize:"none",fontFamily:"monospace",boxSizing:"border-box"}}/>
+          <PBtn onClick={decode} disabled={!raw.trim()}>Preview →</PBtn>
+        </>
+      ):(
+        <>
+          <div style={{background:"#101b33",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px",marginBottom:14}}>
+            <div style={{fontSize:15,fontWeight:600,color:C.text}}>{parsed.season||"Squad"}</div>
+            <div style={{fontSize:12,color:C.muted,marginTop:2}}>Exported {parsed.exported||"—"} · {parsed.players.length} players</div>
+          </div>
+          <div style={{fontSize:13,color:C.soft,lineHeight:1.8,marginBottom:14}}>
+            <div><span style={{color:C.lime,fontWeight:700}}>{known}</span> already in your squad — positions, TREDS, focus and notes will be updated</div>
+            <div><span style={{color:C.blue,fontWeight:700}}>{fresh}</span> not in your squad — will be added as new players</div>
+            <div style={{color:C.muted,fontSize:12,marginTop:6}}>Attendance and game time are untouched. Anyone in your squad who is not in this code is left exactly as they are.</div>
+          </div>
+          <div style={{display:"flex",gap:10}}>
+            <Ghost onClick={()=>{setParsed(null);setRaw("");}}>← Back</Ghost>
+            <PBtn style={{marginTop:0,flex:1}} onClick={()=>{const r=onApply(parsed);onClose();notify(`${r.updated} updated, ${r.created} added ✓`);}}>Apply →</PBtn>
+          </div>
+        </>
+      )}
+    </ModalWrap>
   );
 }
 
@@ -1055,12 +1237,14 @@ function DiaryScreen({season,players,onOpenEvent,onAddEvent,onImport,onOpenTourn
   const evs=allEvents(season);
   const future=evs.filter(e=>isFuture(e.date)).sort((a,b)=>String(a.date).localeCompare(String(b.date)));
   const past=evs.filter(e=>!isFuture(e.date)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
-  const tourns=[...(season.tournaments||[]),...(season.activeTournament?[season.activeTournament]:[])]
-    .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  const festCount=evs.filter(e=>e.type==="festival").length;
+  const tourFor=e=>{if(!e.tournamentId)return null;if(season.activeTournament?.id===e.tournamentId)return season.activeTournament;return (season.tournaments||[]).find(t=>t.id===e.tournamentId)||null;};
 
   const Row=({e})=>{
     const t=evType(e.type);
     const fut=isFuture(e.date);
+    const tour=tourFor(e);
+    const nMatches=tour?(tour.teams||[]).reduce((a,tm)=>a+(tm.matches||[]).length,0):0;
     const attended=players.filter(p=>["present","late"].includes(e.attendance?.[p.id])).length;
     const marked=Object.keys(e.attendance||{}).length;
     const yes=players.filter(p=>e.availability?.[p.id]==="yes").length;
@@ -1071,7 +1255,11 @@ function DiaryScreen({season,players,onOpenEvent,onAddEvent,onImport,onOpenTourn
         <div style={{fontSize:19,flexShrink:0}}>{t.icon}</div>
         <div style={{minWidth:0,flex:1}}>
           <div style={{fontSize:15,fontWeight:600,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{e.title||t.label}</div>
-          <div style={{fontSize:11,color:C.muted,marginTop:2}}>{e.date}{e.location?` · ${e.location}`:""}</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+            {e.date}{e.location?` · ${e.location}`:""}
+            {tour?` · ${(tour.teams||[]).length} team${(tour.teams||[]).length!==1?"s":""}, ${nMatches} match${nMatches!==1?"es":""}`:""}
+            {tour&&season.activeTournament?.id===tour.id?" · live":""}
+          </div>
         </div>
         <div style={{textAlign:"right",flexShrink:0}}>
           {fut
@@ -1089,7 +1277,7 @@ function DiaryScreen({season,players,onOpenEvent,onAddEvent,onImport,onOpenTourn
   return(
     <>
       <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900,color:C.lime,margin:"0 0 3px"}}>Season Diary</h2>
-      <div style={{fontSize:12,color:C.muted,marginBottom:16}}>{past.length} logged · {future.length} planned · {tourns.length} tournament{tourns.length!==1?"s":""}</div>
+      <div style={{fontSize:12,color:C.muted,marginBottom:16}}>{past.length} logged · {future.length} planned · {festCount} festival{festCount!==1?"s":""}</div>
 
       <div style={{display:"flex",gap:7,marginBottom:18,flexWrap:"wrap"}}>
         {EV_TYPES.map(t=>(
@@ -1110,34 +1298,15 @@ function DiaryScreen({season,players,onOpenEvent,onAddEvent,onImport,onOpenTourn
       {past.length===0&&<Card><p style={{fontSize:13,color:C.muted}}>Nothing logged yet.</p></Card>}
       {past.map(e=><Row key={e.id} e={e}/>)}
 
-      {tourns.length>0&&<>
-        <div style={{height:14}}/>
-        <SHead>Tournaments</SHead>
-        {tourns.map(t=>{
-          const att=(t.roster||[]).filter(r=>r.attending&&!r.ill).length;
-          return(
-            <div key={t.id} onClick={()=>onOpenTournament(t)} style={{display:"flex",gap:11,alignItems:"center",background:C.card,border:`1px solid ${t.status==="active"?C.lime:C.border}`,borderRadius:8,padding:"12px 13px",marginBottom:8,cursor:"pointer"}}>
-              <div style={{fontSize:19}}>🏆</div>
-              <div style={{minWidth:0,flex:1}}>
-                <div style={{fontSize:15,fontWeight:600,color:C.text}}>{t.name}</div>
-                <div style={{fontSize:11,color:C.muted,marginTop:2}}>{t.date}{t.status==="active"?" · active":""}</div>
-              </div>
-              <div style={{textAlign:"right"}}>
-                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:17,fontWeight:900,color:C.lime}}>{att}</div>
-                <div style={{fontSize:9,color:C.muted}}>squad</div>
-              </div>
-            </div>
-          );
-        })}
-      </>}
     </>
   );
 }
 
-function EventScreen({event,players,patchEvent,deleteEvent,onBack,notify,onStartTournament}){
+function EventScreen({event,players,patchEvent,deleteEvent,onBack,notify,onStartTournament,onOpenMatches,onExport}){
   const fut=isFuture(event.date);
   const[tab,setTab]=useState(fut?"avail":"register");
   const[confirmDel,setConfirmDel]=useState(false);
+  const[filt,setFilt]=useState(null);
   const att=event.attendance||{}, av=event.availability||{};
   const t=evType(event.type);
 
@@ -1152,10 +1321,11 @@ function EventScreen({event,players,patchEvent,deleteEvent,onBack,notify,onStart
     notify("Known absences marked excused ✓");
   };
 
-  const sorted=[...players].sort((a,b)=>a.name.localeCompare(b.name));
   const states=tab==="avail"?AVAIL:ATT_STATES;
   const cur=tab==="avail"?av:att;
   const setCur=tab==="avail"?setAv:setAtt;
+  const sorted=[...players].sort((a,b)=>a.name.localeCompare(b.name))
+    .filter(p=>!filt||(filt==="__unset"?!cur[p.id]:cur[p.id]===filt));
 
   return(
     <>
@@ -1181,12 +1351,15 @@ function EventScreen({event,players,patchEvent,deleteEvent,onBack,notify,onStart
       {event.type==="festival"&&(
         <Card style={{border:`1px solid ${event.tournamentId?C.grass:C.lime}`}}>
           {event.tournamentId
-            ? <p style={{fontSize:13,color:C.soft,lineHeight:1.6}}>🏆 A tournament has been started from this festival. Open the <strong style={{color:C.lime}}>Match</strong> tab to run it.</p>
+            ? <>
+                <p style={{fontSize:13,color:C.soft,marginBottom:12,lineHeight:1.6}}>Teams and matches are set up for this festival.</p>
+                <PBtn style={{marginTop:0}} color={C.lime} onClick={onOpenMatches}>🏉 Open matches →</PBtn>
+              </>
             : <>
                 <p style={{fontSize:13,color:C.soft,marginBottom:12,lineHeight:1.6}}>
-                  When you get there, start the tournament from this festival. It carries over the name, date, location and everyone's availability, so you only enter it once.
+                  Set up teams and matches when you get there. Name, date, location and everyone's availability carry across, so nothing is entered twice.
                 </p>
-                <PBtn style={{marginTop:0}} color={C.lime} onClick={()=>onStartTournament(event)}>🏆 Start tournament from this festival</PBtn>
+                <PBtn style={{marginTop:0}} color={C.lime} onClick={()=>onStartTournament(event)}>🏉 Set up teams &amp; matches</PBtn>
               </>}
         </Card>
       )}
@@ -1199,15 +1372,24 @@ function EventScreen({event,players,patchEvent,deleteEvent,onBack,notify,onStart
       <Card>
         <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}}>
           {states.map(st=>(
-            <StatChip key={st.key} label={st.label} col={st.col} value={players.filter(p=>cur[p.id]===st.key).length}/>
+            <StatChip key={st.key} label={st.label} col={st.col} active={filt===st.key}
+              onClick={()=>setFilt(filt===st.key?null:st.key)}
+              value={players.filter(p=>cur[p.id]===st.key).length}/>
           ))}
-          <StatChip label="Not set" col="#8296b2" value={players.filter(p=>!cur[p.id]).length}/>
+          <StatChip label="Not set" col={C.soft} active={filt==="__unset"}
+            onClick={()=>setFilt(filt==="__unset"?null:"__unset")}
+            value={players.filter(p=>!cur[p.id]).length}/>
         </div>
+        {filt&&<div style={{fontSize:12,color:C.lime,marginBottom:10}}>
+          Showing {filt==="__unset"?"players with nothing recorded":states.find(x=>x.key===filt)?.label.toLowerCase()} ·{" "}
+          <button onClick={()=>setFilt(null)} style={{background:"none",border:"none",color:C.soft,fontSize:12,cursor:"pointer",fontFamily:"inherit",textDecoration:"underline",padding:0}}>show everyone</button>
+        </div>}
         <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
           {tab==="avail"
             ? <><Ghost onClick={()=>allAv("yes")}>All available</Ghost><Ghost onClick={()=>allAv(null)}>Clear</Ghost></>
             : <><Ghost onClick={()=>allAtt("present")}>All present</Ghost><Ghost onClick={copyAvail}>Excuse known absences</Ghost></>}
         </div>
+        {sorted.length===0&&<p style={{fontSize:13,color:C.muted,padding:"8px 0"}}>Nobody in that group.</p>}
         {sorted.map(p=>(
           <div key={p.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
             <span style={{fontSize:14,flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
@@ -1234,7 +1416,10 @@ function EventScreen({event,players,patchEvent,deleteEvent,onBack,notify,onStart
               <PBtn style={{marginTop:0,flex:1}} color={C.red} onClick={()=>{deleteEvent(event.id);onBack();notify("Event deleted");}}>Delete</PBtn>
             </div>
           </Card>
-        : <Ghost onClick={()=>setConfirmDel(true)} style={{color:C.red,borderColor:C.red}}>Delete this event</Ghost>}
+        : <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <Ghost onClick={()=>onExport(event)} style={{flex:1,textAlign:"center"}}>↗ Export this event</Ghost>
+            <Ghost onClick={()=>setConfirmDel(true)} style={{color:C.red,borderColor:C.red}}>Delete</Ghost>
+          </div>}
     </>
   );
 }
@@ -1328,7 +1513,7 @@ function SquadScreen({season,players,onOpenPlayer,onAssess,addPlayer,updatePlaye
   );
 }
 
-function AnalysisScreen({season,players}){
+function AnalysisScreen({season,players,onOpenPlayer}){
   const[filt,setFilt]=useState("all");
   const[sortKey,setSortKey]=useState("name");
   const[desc,setDesc]=useState(false);
@@ -1338,7 +1523,7 @@ function AnalysisScreen({season,players}){
   const COLS=[
     {key:"training",label:"Train %",get:p=>attStats(evs,p.id).rate,fmt:v=>v===null?"—":v+"%"},
     {key:"sessions",label:"Sessions",get:p=>attStats(evs,p.id).attended,fmt:v=>v},
-    {key:"tournaments",label:"Tourns",get:p=>tournamentsAttended(season,p.id),fmt:v=>v},
+    {key:"tournaments",label:"Fests",get:p=>tournamentsAttended(season,p.id),fmt:v=>v},
     {key:"halves",label:"Halves",get:p=>p.seasonHalves,fmt:v=>v},
     {key:"treds",label:"TREDS",get:p=>tredsScore(p)?.avg??null,fmt:v=>v===null?"—":v.toFixed(1)},
     {key:"combos",label:"Links",get:p=>combosFor(season,p.id).length,fmt:v=>v},
@@ -1388,6 +1573,7 @@ function AnalysisScreen({season,players}){
       </div>
 
       <Card style={{padding:"6px 10px",overflowX:"auto"}}>
+        <p style={{fontSize:11,color:"#8296b2",marginBottom:6}}>Tap a name to open their profile. Tap a column heading to sort.</p>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
           <thead>
             <tr>
@@ -1403,8 +1589,8 @@ function AnalysisScreen({season,players}){
           </thead>
           <tbody>
             {rows.map(p=>(
-              <tr key={p.id}>
-                <td style={{padding:"8px 4px",borderBottom:`1px solid #22314e`,color:C.text,position:"sticky",left:0,background:C.card,whiteSpace:"nowrap"}}>{p.name}</td>
+              <tr key={p.id} onClick={()=>onOpenPlayer&&onOpenPlayer(p.id)} style={{cursor:"pointer"}}>
+                <td style={{padding:"8px 4px",borderBottom:`1px solid #22314e`,color:C.lime,position:"sticky",left:0,background:C.card,whiteSpace:"nowrap"}}>{p.name} <span style={{color:C.muted,fontSize:10}}>›</span></td>
                 {active.map(c=>(
                   <td key={c.key} style={{padding:"8px 5px",borderBottom:`1px solid #22314e`,textAlign:"right",color:C.soft,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:14}}>{c.fmt(c.get(p))}</td>
                 ))}
@@ -1455,10 +1641,12 @@ function MoreMenu({onClose,go,season,lastSaved}){
   );
   return(
     <ModalWrap title="More" onClose={onClose}>
-      <Item icon="💾" label="Saved sessions" sub={lastSaved?`Auto-saved ${lastSaved}`:"Create a restore point"} onClick={()=>go("saves")}/>
+      <Item icon="💾" label="Save a restore point now" sub="One tap — named with today's date and time" col={C.lime} onClick={()=>go("quicksave")}/>
+      <Item icon="🗂" label="Saved restore points" sub={lastSaved?`Auto-saved ${lastSaved}`:"Manage and load saves"} onClick={()=>go("saves")}/>
       <Item icon="📊" label="Season stats" sub="Fairness, results, history" onClick={()=>go("stats")}/>
-      <Item icon="↗" label="Export session" sub="Share with another coach" onClick={()=>go("export")}/>
-      <Item icon="↙" label="Import session" sub="Load a code" onClick={()=>go("import")}/>
+      <Item icon="↗" label="Export a code" sub="Everything, squad, or a single event" onClick={()=>go("exportChooser")}/>
+      <Item icon="↙" label="Import a season" sub="Replace everything from a full backup" onClick={()=>go("import")}/>
+      <Item icon="👥" label="Import a squad" sub="Merge player records by name" onClick={()=>go("squadImport")}/>
     </ModalWrap>
   );
 }
@@ -1489,18 +1677,29 @@ function TabBar({view,setTab,hasTournament}){
 }
 
 function AssessScreen({season,players,updatePlayer,notify,onBack,onOpenPlayer}){
-  const DIMS=BEHAVIOURS.map(x=>({...x,kind:"behaviour"}));
+  const[mode,setMode]=useState("treds");
+  const DIMS=mode==="treds"
+    ? BEHAVIOURS.map(x=>({...x,kind:"behaviour"}))
+    : POSITIONS.map(x=>({...x,kind:"position"}));
   const[idx,setIdx]=useState(0);
   const[hideRated,setHideRated]=useState(false);
   const d=DIMS[idx];
   const field=d.kind==="skill"?"competence":"behaviour";
 
-  const val=p=>(d.kind==="skill"?p.competence:p.behaviour)?.[d.key]||0;
-  const setVal=(p,v)=>updatePlayer(p.id,{[field]:{...(p[field]||{}),[d.key]:val(p)===v?0:v}});
+  const val=p=>p.behaviour?.[d.key]||0;
+  const setVal=(p,v)=>updatePlayer(p.id,{behaviour:{...(p.behaviour||{}),[d.key]:val(p)===v?0:v}});
+  // position mode: off -> can play -> primary -> off
+  const posState=p=>p.primary===d.key?2:p.positions.includes(d.key)?1:0;
+  const cyclePos=p=>{
+    const st=posState(p);
+    if(st===0)updatePlayer(p.id,{positions:[...p.positions,d.key]});
+    else if(st===1)updatePlayer(p.id,{primary:d.key});
+    else updatePlayer(p.id,{positions:p.positions.filter(k=>k!==d.key),primary:null});
+  };
 
   const sorted=[...players].sort((a,b)=>a.name.localeCompare(b.name));
-  const shown=hideRated?sorted.filter(p=>val(p)===0):sorted;
-  const done=sorted.filter(p=>val(p)>0).length;
+  const shown=hideRated?sorted.filter(p=>mode==="treds"?val(p)===0:posState(p)===0):sorted;
+  const done=mode==="treds"?sorted.filter(p=>val(p)>0).length:sorted.filter(p=>posState(p)>0).length;
 
   const snapshotAll=()=>{
     const dt=today();
@@ -1514,20 +1713,25 @@ function AssessScreen({season,players,updatePlayer,notify,onBack,onOpenPlayer}){
     <>
       <Breadcrumb crumbs={[{label:"Players",onClick:onBack},{label:"Rapid Assess"}]}/>
 
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        <button onClick={()=>{setMode("treds");setIdx(0);}} style={{flex:1,padding:"11px",borderRadius:7,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,letterSpacing:0.5,border:`1px solid ${mode==="treds"?C.blue:"#35486b"}`,background:mode==="treds"?C.blue:"transparent",color:mode==="treds"?"#fff":C.soft}}>Core Values</button>
+        <button onClick={()=>{setMode("pos");setIdx(0);}} style={{flex:1,padding:"11px",borderRadius:7,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:700,letterSpacing:0.5,border:`1px solid ${mode==="pos"?C.lime:"#35486b"}`,background:mode==="pos"?C.lime:"transparent",color:mode==="pos"?"#111":C.soft}}>Positions</button>
+      </div>
+
       <Card style={{position:"sticky",top:"calc(env(safe-area-inset-top) + 54px)",zIndex:80}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:10}}>
           <button onClick={()=>setIdx(i=>Math.max(0,i-1))} disabled={idx===0}
             style={{padding:"8px 12px",background:"transparent",border:`1px solid ${idx===0?"#1a2740":C.border}`,borderRadius:5,color:idx===0?"#35486b":C.soft,fontSize:14,cursor:idx===0?"not-allowed":"pointer",fontFamily:"inherit"}}>←</button>
           <div style={{textAlign:"center",minWidth:0,flex:1}}>
             <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1.5,fontFamily:"'Barlow Condensed',sans-serif"}}>
-              Core Values · {idx+1} of {DIMS.length}
+              {mode==="treds"?"Core Values":"Position"} · {idx+1} of {DIMS.length}
             </div>
-            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:700,color:d.kind==="skill"?C.amber:C.blue,lineHeight:1.2}}>{d.label}</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:700,color:mode==="treds"?C.blue:C.lime,lineHeight:1.2}}>{d.label}</div>
           </div>
           <button onClick={()=>setIdx(i=>Math.min(DIMS.length-1,i+1))} disabled={idx===DIMS.length-1}
             style={{padding:"8px 12px",background:idx===DIMS.length-1?"transparent":C.grass,border:`1px solid ${idx===DIMS.length-1?"#1a2740":C.grass}`,borderRadius:5,color:idx===DIMS.length-1?"#35486b":"#fff",fontSize:14,cursor:idx===DIMS.length-1?"not-allowed":"pointer",fontFamily:"inherit",fontWeight:700}}>→</button>
         </div>
-        {d.kind==="behaviour"&&(
+        {mode==="treds"&&d.kind==="behaviour"&&(
           <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:8}}>
             <span style={{fontSize:11,color:"#93a4c0"}}>1 = {d.low}</span>
             <span style={{fontSize:11,color:"#93a4c0",textAlign:"right"}}>5 = {d.high}</span>
@@ -1550,8 +1754,13 @@ function AssessScreen({season,players,updatePlayer,notify,onBack,onOpenPlayer}){
           <div key={p.id} style={{padding:"9px 0",borderBottom:`1px solid ${C.border}`}}>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:d.kind==="behaviour"?6:0,flexWrap:"wrap"}}>
               <span onClick={()=>onOpenPlayer(p.id)} style={{fontSize:14,cursor:"pointer",minWidth:100,flex:1,color:val(p)>0?C.text:C.soft}}>{p.name}</span>
-              {false
-                ? null
+              {mode==="pos"
+                ? <button onClick={()=>cyclePos(p)} style={{minWidth:128,padding:"9px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:13,fontWeight:posState(p)===2?700:400,
+                    border:`1px solid ${posState(p)===2?C.amber:posState(p)===1?C.grass:"#35486b"}`,
+                    background:posState(p)===2?C.amber:posState(p)===1?C.grass:"#16233f",
+                    color:posState(p)===2?"#111":posState(p)===1?"#fff":"#93a4c0"}}>
+                    {posState(p)===2?"★ Primary":posState(p)===1?"✓ Can play":"— Not here"}
+                  </button>
                 : <div style={{flex:1,minWidth:180}}>
                     <div style={{display:"flex",gap:4}}>
                       {[1,2,3,4,5].map(n=>(
@@ -1569,7 +1778,7 @@ function AssessScreen({season,players,updatePlayer,notify,onBack,onOpenPlayer}){
       <SHead>When you've finished a pass</SHead>
       <Card>
         <p style={{fontSize:12,color:C.muted,marginBottom:10,lineHeight:1.6}}>
-          Saves today's ratings as a dated snapshot for every player, so you can see how the picture moves across the season. Current ratings stay editable.
+          Saves today's core-value ratings as a dated snapshot for every player, so you can see how the picture moves across the season. Current ratings stay editable.
         </p>
         <Ghost onClick={snapshotAll} style={{width:"100%",textAlign:"center"}}>📌 Snapshot whole squad for {today()}</Ghost>
       </Card>
@@ -1731,6 +1940,18 @@ function AttendanceImport({season,players,onApply,onClose,notify}){
     setParsed({mode,date:d.date||today(),title:d.title||"Training",type:d.type||"training",location:d.location||"",present,absent});
   };
 
+  const existing=parsed?(season.events||[]).find(e=>e.date===parsed.date&&e.type===parsed.type):null;
+  const buildPatch=()=>{
+    const map={};
+    if(parsed.mode==="availability"){
+      parsed.present.forEach(x=>{if(x.player)map[x.player.id]="yes";});
+      parsed.absent.forEach(x=>{if(x.player)map[x.player.id]="no";});
+      return{type:parsed.type,date:parsed.date,title:parsed.title,location:parsed.location,availability:map};
+    }
+    parsed.present.forEach(x=>{if(x.player)map[x.player.id]="present";});
+    parsed.absent.forEach(x=>{if(x.player)map[x.player.id]="absent";});
+    return{type:parsed.type,date:parsed.date,title:parsed.title,location:parsed.location,attendance:map};
+  };
   const unmatched=parsed?[...parsed.present,...parsed.absent].filter(x=>!x.player):[];
   const matchedIds=parsed?new Set([...parsed.present,...parsed.absent].filter(x=>x.player).map(x=>x.player.id)):new Set();
   const unmentioned=parsed?players.filter(p=>!matchedIds.has(p.id)):[];
@@ -1777,21 +1998,21 @@ function AttendanceImport({season,players,onApply,onClose,notify}){
               Not mentioned in the code, will be left unset: {unmentioned.map(p=>p.name).join(", ")}
             </div>
           )}
-          <div style={{display:"flex",gap:10}}>
+          {existing&&(
+            <div style={{background:"#33260f",border:`1px solid ${C.amber}`,borderRadius:6,padding:"10px 12px",marginBottom:12}}>
+              <div style={{fontSize:12,color:C.amber,fontWeight:700,marginBottom:4}}>⚠ There is already an event on this date</div>
+              <div style={{fontSize:12,color:"#ffe099",lineHeight:1.6}}>
+                "{existing.title}" — {Object.keys(existing.attendance||{}).length} in the register, {Object.keys(existing.availability||{}).length} availability answers.
+                Adding to it keeps everything already recorded and only fills in the players named in this code. Nothing is erased either way.
+              </div>
+            </div>
+          )}
+          <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
             <Ghost onClick={()=>{setParsed(null);setRaw("");}}>← Back</Ghost>
-            <PBtn style={{marginTop:0,flex:1}} onClick={()=>{
-              const map={};
-              if(parsed.mode==="availability"){
-                parsed.present.forEach(x=>{if(x.player)map[x.player.id]="yes";});
-                parsed.absent.forEach(x=>{if(x.player)map[x.player.id]="no";});
-                onApply({type:parsed.type,date:parsed.date,title:parsed.title,location:parsed.location,notes:"",availability:map,attendance:{}});
-              }else{
-                parsed.present.forEach(x=>{if(x.player)map[x.player.id]="present";});
-                parsed.absent.forEach(x=>{if(x.player)map[x.player.id]="absent";});
-                onApply({type:parsed.type,date:parsed.date,title:parsed.title,location:parsed.location,notes:"",attendance:map,availability:{}});
-              }
-              onClose();
-            }}>Create {parsed.mode==="availability"?"session with availability":"register"} →</PBtn>
+            {existing&&<PBtn style={{marginTop:0,flex:1}} color={C.amber} onClick={()=>{onApply(buildPatch(),existing.id);onClose();}}>Add to "{existing.title}" →</PBtn>}
+            <PBtn style={{marginTop:0,flex:1}} onClick={()=>{onApply(buildPatch(),null);onClose();}}>
+              {existing?"Create a separate event":`Create ${parsed.mode==="availability"?"event with availability":"register"} →`}
+            </PBtn>
           </div>
         </>
       )}
@@ -1884,7 +2105,7 @@ function App(){
   const[showSaves,setShowSaves]=useState(false);
   const[lastSaved,setLastSaved]=useState(null);
   const[newT,setNewT]=useState({name:"",date:today(),location:"",pitchSize:"",numTeams:1,sourceEventId:null,teamNames:["Team 1","Team 2","Team 3","Team 4"]});
-  const[startupSaves,setStartupSaves]=useState([]);const[selPlayerId,setSelPlayerId]=useState(null);const[selEventId,setSelEventId]=useState(null);const[showAttImport,setShowAttImport]=useState(false);const[showMore,setShowMore]=useState(false);
+  const[startupSaves,setStartupSaves]=useState([]);const[selPlayerId,setSelPlayerId]=useState(null);const[selEventId,setSelEventId]=useState(null);const[showAttImport,setShowAttImport]=useState(false);const[showMore,setShowMore]=useState(false);const[showExport,setShowExport]=useState(false);const[showSquadImport,setShowSquadImport]=useState(false);
   const[showStartup,setShowStartup]=useState(false);
 
   useEffect(()=>{
@@ -1907,9 +2128,63 @@ function App(){
     else setView(season?.activeTournament?"tournament":"home");
   };
   const goMore=(k)=>{
-    if(k==="saves")setShowSaves(true);
+    if(k==="quicksave")quickSave();
+    else if(k==="saves")setShowSaves(true);
+    else if(k==="exportChooser")setShowExport(true);
+    else if(k==="squadImport")setShowSquadImport(true);
     else if(k==="stats")setView("stats");
     else setModals(m=>({...m,[k]:true}));
+  };
+  // Import never destroys: merging keeps every existing entry and only fills in
+  // the players named in the code. Returns the id of the event that now holds it.
+  const importAttendance=(ev,existingId)=>{
+    if(existingId){
+      const cur=(season.events||[]).find(e=>e.id===existingId)||{};
+      patchEvent(existingId,{
+        attendance:{...(cur.attendance||{}),...(ev.attendance||{})},
+        availability:{...(cur.availability||{}),...(ev.availability||{})},
+      });
+      return existingId;
+    }
+    return addEvent({...ev,attendance:ev.attendance||{},availability:ev.availability||{},notes:""});
+  };
+
+  // Merge a squad code by name. Never touches attendance, game time or events.
+  const importSquad=(data)=>{
+    let updated=0,created=0;
+    setS(s=>{
+      const norm=t=>String(t||"").toLowerCase().trim();
+      let players=[...s.players];
+      (data.players||[]).forEach(inc=>{
+        const idx=players.findIndex(p=>norm(p.name)===norm(inc.name));
+        const fields={positions:inc.positions||[],preferred:inc.preferred||[],primary:inc.primary??null,
+          behaviour:inc.behaviour||{},focus:inc.focus||[],notes:inc.notes||"",
+          assessments:inc.assessments||[],left:!!inc.left,leftDate:inc.leftDate??null};
+        if(idx>=0){players[idx]={...players[idx],...fields};updated++;}
+        else{players.push({...newPlayer(inc.name,!!inc.isGuest),...fields});created++;}
+      });
+      const byName=n=>players.find(p=>norm(p.name)===norm(n));
+      const combos=[...(s.combos||[])];
+      (data.combos||[]).forEach(c=>{
+        const a=byName(c.a),b=byName(c.b);
+        if(!a||!b)return;
+        if(combos.some(x=>(x.a===a.id&&x.b===b.id)||(x.a===b.id&&x.b===a.id)))return;
+        combos.push({id:uid(),a:a.id,b:b.id,type:c.type,note:c.note||""});
+      });
+      return{...s,players,combos};
+    });
+    return{updated,created};
+  };
+
+  const quickSave=()=>{
+    if(!season){notify("Nothing to save yet","err");return;}
+    const slots=lsGet(LS_SAVES)||[];
+    if(slots.length>=MAX_SLOTS){notify(`All ${MAX_SLOTS} slots full — delete one first`,"err");setShowSaves(true);return;}
+    const id=uid();
+    if(!lsSet(`clipboard_save_${id}`,season)){notify("Save failed","err");return;}
+    const name=`${season.name} — ${fmtNow()}`;
+    lsSet(LS_SAVES,[{id,name,savedAt:fmtNow(),seasonName:season.name},...slots]);
+    notify("Restore point saved ✓");
   };
   const openM=k=>setModals(m=>({...m,[k]:true}));
   const closeM=k=>setModals(m=>({...m,[k]:false}));
@@ -1970,7 +2245,7 @@ function App(){
   };
 
   const startFromEvent=(ev)=>{
-    if(season?.activeTournament){notify("End the current tournament first","err");openM("archiveConfirm");return;}
+    if(season?.activeTournament){notify("Finish the current festival first","err");openM("archiveConfirm");return;}
     setNewT({name:ev.title||"Festival",date:ev.date||today(),location:ev.location||"",
       pitchSize:"",numTeams:1,sourceEventId:ev.id,teamNames:["Team 1","Team 2","Team 3","Team 4"]});
     openM("newTournament");
@@ -1991,7 +2266,7 @@ function App(){
       const archived={...s.activeTournament,status:"archived",playerSnapshot:s.players.map(p=>({id:p.id,name:p.name,seasonHalves:p.seasonHalves+(rMap[p.id]||0)}))};
       return{...s,activeTournament:null,tournaments:[archived,...s.tournaments],players:s.players.map(p=>({...p,seasonHalves:p.seasonHalves+(rMap[p.id]||0),recentHalves:rMap[p.id]||0}))};
     });
-    closeM("archiveConfirm");setView("home");notify("Tournament ended ✓");
+    closeM("archiveConfirm");setView("home");notify("Festival ended ✓");
   };
 
   const patchTournament=(t)=>setS(s=>({...s,activeTournament:t}));
@@ -2076,7 +2351,7 @@ function App(){
         <div style={{maxWidth:980,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,cursor:view!=="setup"?"pointer":"default"}} onClick={()=>view!=="setup"&&setView("home")}>
             <span style={{fontSize:24}}>📋</span>
-            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>v5.4 · simulation fixes</div></div>
+            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>v6.1 · export codes</div></div>
           </div>
           {view!=="setup"&&!showStartup&&(
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -2105,29 +2380,29 @@ function App(){
         {view==="squadOld"&&season&&<SquadManager season={season} players={season.players} updatePlayer={updatePlayer} addPlayer={addPlayer} removePlayer={removePlayer} onBack={()=>setView("home")} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}}/>}
         {view==="stats"&&season&&<StatsView season={season} maxS={maxS} maxR={maxR} openM={openM} setView={setView}/>}
         {(view==="squad"||view==="players")&&season&&<SquadScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} addPlayer={addPlayer} updatePlayer={updatePlayer} notify={notify}/>}
-        {view==="analysis"&&season&&<AnalysisScreen season={season} players={season.players}/>}
+        {view==="analysis"&&season&&<AnalysisScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}}/>}
         {view==="assess"&&season&&<AssessScreen season={season} players={season.players} updatePlayer={updatePlayer} notify={notify} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("squad")}/>}
         {view==="player"&&season&&(()=>{const pl=season.players.find(x=>x.id===selPlayerId);return pl?<PlayerProfile player={pl} players={season.players} season={season} updatePlayer={updatePlayer} setPlayerLeft={setPlayerLeft} addCombo={addCombo} removeCombo={removeCombo} notify={notify} onBack={()=>{setSelPlayerId(null);setView("squad");}} onOpenPlayer={id=>setSelPlayerId(id)}/>:<SquadScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} addPlayer={addPlayer} updatePlayer={updatePlayer} notify={notify}/>;})()}
         {(view==="diary"||view==="timeline")&&season&&<DiaryScreen season={season} players={season.players} onOpenEvent={id=>{setSelEventId(id);setView("event");}} onAddEvent={t=>{const id=addEvent({type:t,title:evType(t).label});setSelEventId(id);setView("event");}} onImport={()=>setShowAttImport(true)} onOpenTournament={t=>{if(t.status==="active")setView("tournament");else setView("stats");}}/>}
-        {(view==="event"||view==="session")&&season&&(()=>{const ev=(season.events||[]).find(x=>x.id===selEventId);return ev?<EventScreen event={ev} players={season.players} patchEvent={patchEvent} deleteEvent={deleteEvent} notify={notify} onStartTournament={startFromEvent} onBack={()=>{setSelEventId(null);setView("diary");}}/>:<DiaryScreen season={season} players={season.players} onOpenEvent={id=>{setSelEventId(id);setView("event");}} onAddEvent={t=>{const id=addEvent({type:t,title:evType(t).label});setSelEventId(id);setView("event");}} onImport={()=>setShowAttImport(true)} onOpenTournament={()=>setView("tournament")}/>;})()}
+        {(view==="event"||view==="session")&&season&&(()=>{const ev=(season.events||[]).find(x=>x.id===selEventId);return ev?<EventScreen event={ev} players={season.players} patchEvent={patchEvent} deleteEvent={deleteEvent} notify={notify} onStartTournament={startFromEvent} onOpenMatches={()=>setView("tournament")} onExport={()=>setShowExport(true)} onBack={()=>{setSelEventId(null);setView("diary");}}/>:<DiaryScreen season={season} players={season.players} onOpenEvent={id=>{setSelEventId(id);setView("event");}} onAddEvent={t=>{const id=addEvent({type:t,title:evType(t).label});setSelEventId(id);setView("event");}} onImport={()=>setShowAttImport(true)} onOpenTournament={()=>setView("tournament")}/>;})()}
       </main>
       {modals.newTournament&&(
-        <ModalWrap title="New Tournament" onClose={()=>closeM("newTournament")}>
-          <Lbl mt={0}>Tournament Name</Lbl><Inp placeholder="e.g. Havant Festival" value={newT.name} onChange={e=>setNewT(t=>({...t,name:e.target.value}))}/>
+        <ModalWrap title="Set Up Festival" onClose={()=>closeM("newTournament")}>
+          <Lbl mt={0}>Festival Name</Lbl><Inp placeholder="e.g. Havant Festival" value={newT.name} onChange={e=>setNewT(t=>({...t,name:e.target.value}))}/>
           <Lbl>Date</Lbl><Inp type="date" value={newT.date} onChange={e=>setNewT(t=>({...t,date:e.target.value}))}/>
           <Lbl>Location (optional)</Lbl><Inp placeholder="e.g. Havant RFC" value={newT.location} onChange={e=>setNewT(t=>({...t,location:e.target.value}))}/>
           <Lbl>Players on pitch per side (blank = default {season?.pitchSize})</Lbl><Inp type="number" style={{width:90}} min={3} max={15} placeholder={season?.pitchSize} value={newT.pitchSize} onChange={e=>setNewT(t=>({...t,pitchSize:e.target.value}))}/>
           <Lbl>Number of teams</Lbl>
           <div style={{display:"flex",gap:8,marginBottom:8}}>{[1,2,3,4].map(n=><button key={n} onClick={()=>setNewT(t=>({...t,numTeams:n}))} style={{padding:"7px 16px",borderRadius:5,border:`1px solid ${newT.numTeams===n?C.lime:"#35486b"}`,background:newT.numTeams===n?"#10294f":"transparent",color:newT.numTeams===n?C.lime:C.soft,fontSize:14,cursor:"pointer",fontWeight:newT.numTeams===n?700:400}}>{n}</button>)}</div>
           {newT.numTeams>1&&<><Lbl>Team Names</Lbl>{Array.from({length:newT.numTeams},(_,i)=><Inp key={i} style={{marginBottom:6}} placeholder={`Team ${i+1}`} value={newT.teamNames[i]||""} onChange={e=>{const names=[...newT.teamNames];names[i]=e.target.value;setNewT(t=>({...t,teamNames:names}));}}/>)}</>}
-          {activeTournament&&<div style={{background:"#33260f",border:`1px solid ${C.amber}`,borderRadius:6,padding:"8px 12px",fontSize:12,color:"#ffe099",marginTop:12}}>⚠ End the current tournament first.</div>}
-          <PBtn onClick={startTournament} disabled={!!activeTournament}>Start Tournament →</PBtn>
-          {activeTournament&&<Ghost onClick={()=>{closeM("newTournament");openM("archiveConfirm");}}>End current tournament first</Ghost>}
+          {activeTournament&&<div style={{background:"#33260f",border:`1px solid ${C.amber}`,borderRadius:6,padding:"8px 12px",fontSize:12,color:"#ffe099",marginTop:12}}>⚠ Finish the current festival first.</div>}
+          <PBtn onClick={startTournament} disabled={!!activeTournament}>Start Festival →</PBtn>
+          {activeTournament&&<Ghost onClick={()=>{closeM("newTournament");openM("archiveConfirm");}}>Finish the current festival first</Ghost>}
         </ModalWrap>
       )}
       {modals.archiveConfirm&&(
-        <ModalWrap title="End Tournament?" onClose={()=>closeM("archiveConfirm")}>
-          <p style={{fontSize:13,color:C.soft,marginBottom:16,lineHeight:1.6}}>This archives <strong style={{color:C.text}}>{activeTournament?.name}</strong> and adds all tournament halves to season totals.</p>
+        <ModalWrap title="End Festival?" onClose={()=>closeM("archiveConfirm")}>
+          <p style={{fontSize:13,color:C.soft,marginBottom:16,lineHeight:1.6}}>This archives <strong style={{color:C.text}}>{activeTournament?.name}</strong> and adds all halves played to season totals.</p>
           <div style={{display:"flex",gap:10,flexWrap:"wrap"}}><Ghost onClick={()=>closeM("archiveConfirm")}>Cancel</Ghost><PBtn style={{marginTop:0,flex:1}} color={C.amber} onClick={()=>{archiveTournament();setTimeout(()=>openM("newTournament"),300);}}>End &amp; Start New →</PBtn><PBtn style={{marginTop:0,flex:1}} onClick={archiveTournament}>End &amp; Finish</PBtn></div>
         </ModalWrap>
       )}
@@ -2139,7 +2414,7 @@ function App(){
       )}
       {modals.startFreshConfirm&&(
         <ModalWrap title="Start Fresh?" onClose={()=>closeM("startFreshConfirm")}>
-          <p style={{fontSize:13,color:C.soft,marginBottom:8,lineHeight:1.6}}>This will <strong style={{color:C.red}}>permanently delete all data</strong> — the current season, all tournaments, all named saves, and all game-time records.</p>
+          <p style={{fontSize:13,color:C.soft,marginBottom:8,lineHeight:1.6}}>This will <strong style={{color:C.red}}>permanently delete all data</strong> — the current season, all festivals, all named saves, and all game-time records.</p>
           <p style={{fontSize:13,color:C.muted,marginBottom:20,lineHeight:1.6}}>Use <strong style={{color:C.amber}}>Export ↗</strong> or <strong style={{color:C.amber}}>💾 Saves</strong> first if you want a backup.</p>
           <div style={{display:"flex",gap:10}}><Ghost onClick={()=>closeM("startFreshConfirm")} style={{flex:1,textAlign:"center"}}>Cancel</Ghost><PBtn style={{marginTop:0,flex:1}} color={C.red} onClick={startFresh}>🗑 Yes, delete everything</PBtn></div>
         </ModalWrap>
@@ -2158,7 +2433,13 @@ function App(){
           <PBtn style={{marginTop:12}} onClick={doImport}>Load Session</PBtn>
         </ModalWrap>
       )}
-      {showAttImport&&season&&<AttendanceImport season={season} players={season.players} notify={notify} onApply={ev=>{const id=addEvent(ev);setSelEventId(id);setView("session");notify("Session created ✓");}} onClose={()=>setShowAttImport(false)}/>}
+      {showAttImport&&season&&<AttendanceImport season={season} players={season.players} notify={notify} onApply={(ev,existingId)=>{
+          const id=importAttendance(ev,existingId);
+          setSelEventId(id);setView("event");
+          notify(existingId?"Added to the existing event ✓":"Event created ✓");
+        }} onClose={()=>setShowAttImport(false)}/>}
+      {showExport&&season&&<ExportChooser season={season} notify={notify} onClose={()=>setShowExport(false)}/>}
+      {showSquadImport&&season&&<SquadImport season={season} notify={notify} onApply={importSquad} onClose={()=>setShowSquadImport(false)}/>}
       {showMore&&<MoreMenu onClose={()=>setShowMore(false)} go={goMore} season={season} lastSaved={lastSaved}/>}
       {showSaves&&<SavesManager season={season} onLoad={handleSavesLoad} onClose={()=>setShowSaves(false)} notify={notify}/>}
       {season&&view!=="setup"&&!showStartup&&<TabBar view={view} hasTournament={!!activeTournament} setTab={goTab}/>}
