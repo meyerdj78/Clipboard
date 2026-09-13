@@ -283,9 +283,65 @@ const normaliseImport=(d)=>{
   return null;
 };
 
-const blankSeason=(name,pitchSize,playerNames)=>({id:uid(),name,pitchSize,players:playerNames.map(n=>newPlayer(n,false)),tournaments:[],activeTournament:null,events:[],combos:[]});
+const INJURY_TYPES=[
+  {key:"concussion",label:"Suspected concussion",head:true,remove:true},
+  {key:"head",label:"Head knock — no concussion signs",head:true,remove:false},
+  {key:"lower",label:"Lower limb",head:false,remove:true},
+  {key:"upper",label:"Upper limb",head:false,remove:true},
+  {key:"trunk",label:"Trunk, back or neck",head:false,remove:true},
+  {key:"knock",label:"Knock — played on",head:false,remove:false},
+  {key:"other",label:"Other",head:false,remove:true},
+];
+const injuryLabel=k=>INJURY_TYPES.find(x=>x.key===k)?.label??"Injury";
+const isHeadInjury=k=>!!INJURY_TYPES.find(x=>x.key===k)?.head;
+
+// RFU HEADCASE GRAS: a minimum of 21 days from the date of injury for community
+// rugby. This is the earliest possible return, NOT a clearance — the graduated
+// pathway and the club's RugbySafe lead decide when a player actually returns.
+const GRAS_MIN_DAYS=21;
+const grasEarliest=(dateStr)=>{
+  const d=new Date(dateStr+"T00:00:00");
+  if(isNaN(d))return null;
+  d.setDate(d.getDate()+GRAS_MIN_DAYS);
+  return d.toISOString().slice(0,10);
+};
+const daysSince=(dateStr)=>{
+  const d=new Date(dateStr+"T00:00:00");
+  if(isNaN(d))return null;
+  return Math.floor((new Date(today()+"T00:00:00")-d)/86400000);
+};
+const activeInjuries=(season,pid)=>(season?.injuries||[])
+  .filter(i=>i.status==="active"&&(!pid||i.playerId===pid));
+const injuriesFor=(season,pid)=>(season?.injuries||[])
+  .filter(i=>i.playerId===pid)
+  .sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+
+// Halves a single match added, mirroring how they were added in the first place:
+// a locked half credits everyone listed on the pitch, and each recorded change
+// moves half a half from the player going off to the player coming on.
+const matchHalves=(m)=>{
+  const out={};
+  const add=(id,v)=>{if(id)out[id]=(out[id]||0)+v;};
+  if(["halftime","second","done"].includes(m.status))(m.firstHalf?.on||[]).forEach(id=>add(id,1));
+  if(m.status==="done")(m.secondHalf?.on||[]).forEach(id=>add(id,1));
+  (m.changes||[]).forEach(c=>{add(c.onId,0.5);add(c.offId,-0.5);});
+  return out;
+};
+const tournamentHalvesMap=(t)=>{
+  const out={};
+  (t?.roster||[]).forEach(r=>{if(r.tournamentHalves)out[r.playerId]=r.tournamentHalves;});
+  return out;
+};
+const findMatch=(season,mid)=>{
+  const all=[...(season.activeTournament?[season.activeTournament]:[]),...(season.tournaments||[])];
+  for(const t of all)for(const tm of (t.teams||[]))for(const m of (tm.matches||[]))
+    if(m.id===mid)return{tournament:t,team:tm,match:m,live:season.activeTournament?.id===t.id};
+  return null;
+};
+
+const blankSeason=(name,pitchSize,playerNames)=>({id:uid(),name,pitchSize,players:playerNames.map(n=>newPlayer(n,false)),tournaments:[],activeTournament:null,events:[],combos:[],injuries:[]});
 const blankTournament=(name,date,location,pitchSize,numTeams,teamNames,squadPlayers,avail={})=>({id:uid(),name,date,location,pitchSize,numTeams,status:"roster",teams:Array.from({length:numTeams},(_,i)=>({id:uid(),name:teamNames[i]||`Team ${i+1}`,matches:[]})),roster:squadPlayers.filter(p=>!p.left).map(p=>({playerId:p.id,attending:avail[p.id]!=="no",ill:p.ill||false,teamId:null,tournamentHalves:0}))});
-const migrateSeason=(s)=>{if(!s)return s;const s2={...s,players:(s.players||[]).map(migratePlayer),events:(Array.isArray(s.events)?s.events:[]).map(e=>({availability:{},attendance:{},type:'training',...e})),combos:Array.isArray(s.combos)?s.combos:[]};if(!s2.activeTournament)return s2;const t=s2.activeTournament;if(t.teams&&t.roster)return s2;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s2.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s2,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
+const migrateSeason=(s)=>{if(!s)return s;const s2={...s,players:(s.players||[]).map(migratePlayer),events:(Array.isArray(s.events)?s.events:[]).map(e=>({availability:{},attendance:{},type:'training',...e})),combos:Array.isArray(s.combos)?s.combos:[],injuries:Array.isArray(s.injuries)?s.injuries:[]};if(!s2.activeTournament)return s2;const t=s2.activeTournament;if(t.teams&&t.roster)return s2;const teamId=uid();const rMap={};(t.matches||[]).forEach(m=>{if(["halftime","done"].includes(m.status)){(m.firstHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}if(m.status==="done"){(m.secondHalf?.on||[]).forEach(id=>{rMap[id]=(rMap[id]||0)+1;});}});const roster=s2.players.map(p=>({playerId:p.id,attending:true,ill:p.ill||false,teamId,tournamentHalves:rMap[p.id]||p.recentHalves||0}));return{...s2,activeTournament:{...t,teams:[{id:teamId,name:"Team 1",matches:t.matches||[]}],roster,status:"active",numTeams:1}};};
 
 const Lbl=({children,mt=12})=><div style={{fontSize:11,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:5,marginTop:mt,fontFamily:"'Barlow Condensed',sans-serif"}}>{children}</div>;
 const Inp=({style,...p})=><input style={{background:"#16233f",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"8px 11px",fontSize:16,width:"100%",outline:"none",fontFamily:"inherit",boxSizing:"border-box",...style}} {...p}/>;
@@ -525,7 +581,7 @@ function MovePlayerModal({tournament,seasonPlayers,onUpdate,onClose}){
   );
 }
 
-function MatchView({match,teamPlayers,pitchSize,patchMatch,autoPick,completeHalf,recordChange,notify,updateRosterPlayer,tournament,team,season,onBack,onNext,onPrev,matchIndex,totalMatches}){
+function MatchView({match,teamPlayers,pitchSize,patchMatch,autoPick,completeHalf,recordChange,notify,updateRosterPlayer,tournament,team,season,onBack,onNext,onPrev,onLogInjury,onMove,matchIndex,totalMatches}){
   const[boostIds,setBoostIds]=useState([]);
   const[reviewing,setReviewing]=useState(null);
   const[draft,setDraft]=useState(null);
@@ -580,19 +636,33 @@ function MatchView({match,teamPlayers,pitchSize,patchMatch,autoPick,completeHalf
         </div>
         <p style={{fontSize:11,color:"#8296b2",marginTop:8}}>Tap: Available → Out → Ill → Available</p>
       </Card>
+      <div style={{display:"flex",gap:8,marginTop:16,flexWrap:"wrap"}}>
+        <Ghost onClick={()=>onLogInjury({playerId:"",matchNum:match.num,half:match.status==="second"||match.status==="halftime"?2:1,tournament:true})}
+          style={{flex:1,textAlign:"center",color:C.red,borderColor:C.red}}>🚑 Log an injury</Ghost>
+        {onMove&&<Ghost onClick={onMove} style={{flex:1,textAlign:"center",color:C.blue,borderColor:C.blue}}>⇄ Move players</Ghost>}
+      </div>
+
+      <div style={{display:"flex",gap:8,marginTop:10,marginBottom:6,alignItems:"center"}}>
+        <button onClick={onPrev} disabled={!onPrev} style={{padding:"12px 16px",background:"transparent",border:`1px solid ${onPrev?C.border:"#1a2740"}`,borderRadius:6,color:onPrev?C.soft:"#35486b",fontSize:14,cursor:onPrev?"pointer":"not-allowed",fontFamily:"inherit"}}>←</button>
+        <button onClick={onNext} style={{flex:1,padding:"13px",background:match.status==="done"?C.grass:"transparent",border:`1px solid ${match.status==="done"?C.grass:C.border}`,borderRadius:6,color:match.status==="done"?"#fff":C.soft,fontSize:15,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:1}}>
+          {onNext?"Next Match →":"+ Add Next Match"}
+        </button>
+      </div>
+      <Ghost onClick={()=>onBack()} style={{width:"100%",textAlign:"center"}}>← All matches</Ghost>
+
       {reviewing&&<SelectionEditorWrapper half={reviewing} getDraft={getDraft} pitchSize={pitchSize} players={teamPlayers} onConfirm={confirmSel} onCancel={()=>{setReviewing(null);setDraft(null);}}/>}
     </>
   );
 }
 
-function TeamView({team,tournament,season,seasonPlayers,pitchSize,patchMatch,createMatch,completeHalf,recordChange,autoPick,notify,updateRosterPlayer,onBack}){
+function TeamView({team,tournament,season,seasonPlayers,pitchSize,patchMatch,createMatch,completeHalf,recordChange,autoPick,notify,updateRosterPlayer,onLogInjury,onMove,onBack}){
   const[activeMatchId,setActiveMatchId]=useState(null);
   const activeMatch=team.matches.find(m=>m.id===activeMatchId);
   const matchIndex=team.matches.findIndex(m=>m.id===activeMatchId);
   const teamPlayers=tournament.roster.filter(r=>r.teamId===team.id&&r.attending&&!r.ill).map(r=>{const sp=seasonPlayers.find(p=>p.id===r.playerId);return sp?{...sp,tournamentHalves:r.tournamentHalves??0}:null;}).filter(Boolean);
   const maxT=Math.max(...teamPlayers.map(p=>p.tournamentHalves),1);
   const addAndGo=()=>{const newId=createMatch(team.id);if(newId)setTimeout(()=>setActiveMatchId(newId),50);};
-  if(activeMatch)return <MatchView match={activeMatch} teamPlayers={teamPlayers} pitchSize={pitchSize} patchMatch={patchMatch} autoPick={autoPick} completeHalf={completeHalf} recordChange={recordChange} notify={notify} updateRosterPlayer={updateRosterPlayer} tournament={tournament} team={team} season={season} matchIndex={matchIndex} totalMatches={team.matches.length} onBack={onBack} onPrev={matchIndex>0?()=>setActiveMatchId(team.matches[matchIndex-1].id):null} onNext={matchIndex<team.matches.length-1?()=>setActiveMatchId(team.matches[matchIndex+1].id):addAndGo}/>;
+  if(activeMatch)return <MatchView match={activeMatch} teamPlayers={teamPlayers} pitchSize={pitchSize} patchMatch={patchMatch} autoPick={autoPick} completeHalf={completeHalf} recordChange={recordChange} notify={notify} updateRosterPlayer={updateRosterPlayer} tournament={tournament} team={team} season={season} onLogInjury={onLogInjury} onMove={tournament.teams.length>1?onMove:null} matchIndex={matchIndex} totalMatches={team.matches.length} onBack={onBack} onPrev={matchIndex>0?()=>setActiveMatchId(team.matches[matchIndex-1].id):null} onNext={matchIndex<team.matches.length-1?()=>setActiveMatchId(team.matches[matchIndex+1].id):addAndGo}/>;
   return(
     <>
       <Breadcrumb crumbs={[{label:season.name,onClick:()=>onBack("home")},{label:tournament.name,onClick:()=>onBack("tournament")},{label:team.name}]}/>
@@ -617,13 +687,13 @@ function TeamView({team,tournament,season,seasonPlayers,pitchSize,patchMatch,cre
   );
 }
 
-function TournamentView({tournament,season,seasonPlayers,patchTournament,patchMatch,createMatch,completeHalf,recordChange,autoPick,notify,updateRosterPlayer,onBack,onArchive}){
+function TournamentView({tournament,season,seasonPlayers,patchTournament,patchMatch,createMatch,completeHalf,recordChange,autoPick,notify,updateRosterPlayer,onLogInjury,onBack,onArchive}){
   const[activeTeamId,setActiveTeamId]=useState(null);
   const[showMoveModal,setShowMoveModal]=useState(false);
   if(tournament.status==="roster")return <RosterScreen tournament={tournament} seasonPlayers={seasonPlayers} onUpdate={patchTournament} onProceed={()=>patchTournament({...tournament,status:"assign"})} onBack={()=>onBack("home")}/>;
   if(tournament.status==="assign")return <TeamAssignScreen tournament={tournament} seasonPlayers={seasonPlayers} onUpdate={patchTournament} onProceed={()=>patchTournament({...tournament,status:"active"})}/>;
   const activeTeam=tournament.teams.find(t=>t.id===activeTeamId);
-  if(activeTeam)return <TeamView team={activeTeam} tournament={tournament} season={season} seasonPlayers={seasonPlayers} pitchSize={tournament.pitchSize} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onBack={(dest)=>{if(dest==="home")onBack("home");else setActiveTeamId(null);}}/>;
+  if(activeTeam)return <TeamView team={activeTeam} tournament={tournament} season={season} seasonPlayers={seasonPlayers} pitchSize={tournament.pitchSize} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onLogInjury={onLogInjury} onMove={()=>setShowMoveModal(true)} onBack={(dest)=>{if(dest==="home")onBack("home");else setActiveTeamId(null);}}/>;
   const attending=tournament.roster.filter(r=>r.attending&&!r.ill);
   const absent=tournament.roster.filter(r=>!r.attending||r.ill);
   return(
@@ -634,6 +704,7 @@ function TournamentView({tournament,season,seasonPlayers,patchTournament,patchMa
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
           <button onClick={()=>patchTournament({...tournament,status:"roster"})} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,color:C.soft,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✏ Attendance</button>
           <button onClick={()=>patchTournament({...tournament,status:"assign"})} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.border}`,borderRadius:6,color:C.soft,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>✏ Teams</button>
+          <button onClick={()=>onLogInjury({playerId:"",tournament:true})} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.red}`,borderRadius:6,color:C.red,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>🚑 Injury</button>
           {tournament.teams.length>1&&<button onClick={()=>setShowMoveModal(true)} style={{padding:"8px 14px",background:"transparent",border:`1px solid ${C.blue}`,borderRadius:6,color:C.blue,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>⇄ Move Players</button>}
           <button onClick={onArchive} style={{padding:"8px 14px",background:"transparent",border:`2px solid ${C.amber}`,borderRadius:6,color:C.amber,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif"}}>🏁 End Festival</button>
         </div>
@@ -650,6 +721,13 @@ function TournamentView({tournament,season,seasonPlayers,patchTournament,patchMa
           </div>
         );})}
       </div>
+      {activeInjuries(season).length>0&&(<>
+        <SHead>Injuries</SHead>
+        <Card style={{border:`1px solid ${C.red}`}}>
+          <InjuryList season={season} injuries={activeInjuries(season)} compact/>
+          <p style={{fontSize:11,color:"#8296b2",marginTop:10}}>Full record and return tracking under ⋯ → Injuries.</p>
+        </Card>
+      </>)}
       <SHead>Game Time This Festival</SHead>
       <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(tournament.teams.length,2)},1fr)`,gap:12,marginBottom:22}}>
         {tournament.teams.map(team=>{const members=attending.filter(r=>r.teamId===team.id);const maxT=Math.max(...members.map(r=>r.tournamentHalves??0),1);return(
@@ -1098,6 +1176,11 @@ function PlayerProfile({player,players,season,updatePlayer,setPlayerLeft,addComb
         ))}
       </Card>
 
+      <SHead>Injuries</SHead>
+      <Card>
+        <InjuryList season={season} injuries={injuriesFor(season,p.id)} compact/>
+      </Card>
+
       <SHead>Squad Status</SHead>
       <Card>
         {p.left
@@ -1230,6 +1313,288 @@ function SquadImport({season,onApply,onClose,notify}){
         </>
       )}
     </ModalWrap>
+  );
+}
+
+function HeadInjuryNotice({compact}){
+  return(
+    <div style={{background:"#3d1416",border:`1px solid ${C.red}`,borderRadius:8,padding:"12px 14px",marginTop:10}}>
+      <div style={{fontSize:13,color:"#ff9999",fontWeight:700,marginBottom:6}}>⚠ Recognise and Remove</div>
+      <div style={{fontSize:12,color:C.soft,lineHeight:1.7}}>
+        If a concussion is suspected the player must be removed and must not return to play or contact training.
+        Tell the parent or carer today and let your club's RugbySafe lead know.
+        {!compact&&<> The RFU HEADCASE GRAS pathway is a minimum of {GRAS_MIN_DAYS} days from the date of injury for
+        community rugby, and the club keeps the individual GRAS record. This app is a note of what happened — it is
+        not a clearance and it is not a medical record.</>}
+      </div>
+    </div>
+  );
+}
+
+function InjuryModal({season,players,preselect,context,onSave,onClose,notify}){
+  const[pid,setPid]=useState(preselect||"");
+  const[type,setType]=useState("knock");
+  const[note,setNote]=useState("");
+  const[remove,setRemove]=useState(false);
+  const[date,setDate]=useState(today());
+  const t=INJURY_TYPES.find(x=>x.key===type);
+
+  const chooseType=(k)=>{
+    setType(k);
+    const def=INJURY_TYPES.find(x=>x.key===k);
+    setRemove(!!def?.remove);
+  };
+
+  return(
+    <ModalWrap title="Log an Injury" onClose={onClose} wide>
+      <Lbl mt={0}>Player</Lbl>
+      <select value={pid} onChange={e=>setPid(e.target.value)}
+        style={{background:"#16233f",border:`1px solid ${C.border}`,borderRadius:6,color:C.text,padding:"9px 11px",fontSize:16,width:"100%",outline:"none"}}>
+        <option value="">Select player…</option>
+        {[...players].sort((a,b)=>a.name.localeCompare(b.name)).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+      </select>
+
+      <Lbl>What happened</Lbl>
+      <div style={{display:"flex",flexDirection:"column",gap:5}}>
+        {INJURY_TYPES.map(x=>(
+          <button key={x.key} onClick={()=>chooseType(x.key)}
+            style={{padding:"10px 12px",borderRadius:6,cursor:"pointer",fontFamily:"inherit",fontSize:14,textAlign:"left",
+              border:`1px solid ${type===x.key?(x.head?C.red:C.lime):"#35486b"}`,
+              background:type===x.key?(x.head?"#3d1416":"#10294f"):"#16233f",
+              color:type===x.key?(x.head?"#ff9999":C.lime):C.soft,fontWeight:type===x.key?700:400}}>
+            {x.head?"⚠ ":""}{x.label}
+          </button>
+        ))}
+      </div>
+      {isHeadInjury(type)&&<HeadInjuryNotice/>}
+
+      <Lbl>Date</Lbl>
+      <Inp type="date" value={date} onChange={e=>setDate(e.target.value)}/>
+
+      <Lbl>Note</Lbl>
+      <Inp placeholder="e.g. rolled ankle in a tackle, walked off" value={note} onChange={e=>setNote(e.target.value)}/>
+
+      <div onClick={()=>setRemove(v=>!v)} style={{display:"flex",alignItems:"center",gap:10,marginTop:14,cursor:"pointer"}}>
+        <div style={{width:24,height:24,borderRadius:5,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",
+          background:remove?C.red:"#16233f",border:`1px solid ${remove?C.red:"#35486b"}`,color:"#fff",fontSize:14}}>{remove?"✓":""}</div>
+        <span style={{fontSize:14,color:C.text}}>Take them out of selection now</span>
+      </div>
+      {isHeadInjury(type)&&!remove&&
+        <div style={{fontSize:12,color:"#ff9999",marginTop:8}}>A suspected concussion means removal. Please tick this.</div>}
+
+      <div style={{display:"flex",gap:10,marginTop:18}}>
+        <Ghost onClick={onClose}>Cancel</Ghost>
+        <PBtn style={{marginTop:0,flex:1}} color={isHeadInjury(type)?C.red:C.grass}
+          disabled={!pid||(type==="concussion"&&!remove)}
+          onClick={()=>{
+            onSave({playerId:pid,type,note:note.trim(),date,removeFromPlay:remove,context:context||{}});
+            onClose();
+            notify("Injury logged");
+          }}>{!pid?"Select a player":"Log injury"}</PBtn>
+      </div>
+    </ModalWrap>
+  );
+}
+
+function InjuryList({season,injuries,onResolve,onReopen,onOpenPlayer,compact}){
+  const nm=id=>season.players.find(p=>p.id===id)?.name??"Unknown";
+  if(!injuries.length)return <p style={{fontSize:13,color:C.muted}}>None recorded.</p>;
+  return(
+    <>
+      {injuries.map(inj=>{
+        const head=isHeadInjury(inj.type);
+        const days=daysSince(inj.date);
+        const earliest=head?grasEarliest(inj.date):null;
+        return(
+          <div key={inj.id} style={{borderBottom:`1px solid ${C.border}`,padding:"11px 0"}}>
+            <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"flex-start"}}>
+              <div style={{minWidth:0}}>
+                <div onClick={()=>onOpenPlayer&&onOpenPlayer(inj.playerId)}
+                  style={{fontSize:15,fontWeight:600,color:onOpenPlayer?C.lime:C.text,cursor:onOpenPlayer?"pointer":"default"}}>
+                  {nm(inj.playerId)}
+                </div>
+                <div style={{fontSize:12,color:head?"#ff9999":C.soft,marginTop:2}}>{head?"⚠ ":""}{injuryLabel(inj.type)}</div>
+                <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+                  {inj.date}{days!==null&&inj.status==="active"?` · ${days} day${days!==1?"s":""} ago`:""}
+                  {inj.contextLabel?` · ${inj.contextLabel}`:""}
+                </div>
+                {inj.note&&<div style={{fontSize:12,color:C.soft,marginTop:4}}>{inj.note}</div>}
+                {head&&inj.status==="active"&&(
+                  <div style={{fontSize:11,color:C.amber,marginTop:5,lineHeight:1.6}}>
+                    Earliest possible return under GRAS: <strong>{earliest}</strong> ({GRAS_MIN_DAYS} days).
+                    Not a clearance — the pathway and your RugbySafe lead decide.
+                  </div>
+                )}
+                {inj.status==="returned"&&<div style={{fontSize:11,color:C.lime,marginTop:4}}>Returned {inj.returnDate}</div>}
+              </div>
+              {!compact&&(
+                <div style={{flexShrink:0}}>
+                  {inj.status==="active"
+                    ? <button onClick={()=>onResolve(inj.id)} style={{padding:"6px 12px",borderRadius:5,border:`1px solid ${C.lime}`,background:"transparent",color:C.lime,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>Mark returned</button>
+                    : <button onClick={()=>onReopen(inj.id)} style={{padding:"6px 10px",borderRadius:5,border:`1px solid ${C.border}`,background:"transparent",color:C.muted,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>Reopen</button>}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+function InjuriesScreen({season,resolveInjury,reopenInjury,onOpenPlayer,onLog}){
+  const all=[...(season.injuries||[])].sort((a,b)=>String(b.date).localeCompare(String(a.date)));
+  const active=all.filter(i=>i.status==="active");
+  const past=all.filter(i=>i.status!=="active");
+  const heads=active.filter(i=>isHeadInjury(i.type));
+  return(
+    <>
+      <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900,color:C.lime,margin:"0 0 3px"}}>Injuries</h2>
+      <div style={{fontSize:12,color:C.muted,marginBottom:16}}>{active.length} open · {past.length} resolved</div>
+      <PBtn style={{marginTop:0,marginBottom:18}} color={C.red} onClick={onLog}>🚑 Log an injury</PBtn>
+      {heads.length>0&&<HeadInjuryNotice/>}
+      <div style={{height:14}}/>
+      <SHead>Currently out</SHead>
+      <Card><InjuryList season={season} injuries={active} onResolve={resolveInjury} onReopen={reopenInjury} onOpenPlayer={onOpenPlayer}/></Card>
+      <SHead>Resolved</SHead>
+      <Card><InjuryList season={season} injuries={past} onResolve={resolveInjury} onReopen={reopenInjury} onOpenPlayer={onOpenPlayer}/></Card>
+      <p style={{fontSize:11,color:"#8296b2",lineHeight:1.7}}>
+        This is a coaching note of what happened and who is unavailable. It is not a medical record and it does not
+        clear anyone to play. Follow the RFU HEADCASE GRAS pathway and your club's process for that.
+      </p>
+    </>
+  );
+}
+
+function BackupPrompt({onBackup,notify,tone}){
+  const[tick,setTick]=useState(0);
+  const slots=lsGet(LS_SAVES)||[];
+  const last=slots[0];
+  const today_=today();
+  // savedAt looks like "21:23 12 Sep" — good enough to spot one made today
+  const d=new Date();
+  const stamp=`${String(d.getDate()).padStart(2,"0")} ${d.toLocaleDateString("en-GB",{month:"short"})}`;
+  const freshToday=!!last&&String(last.savedAt||"").includes(stamp);
+  const col=freshToday?C.grass:C.amber;
+  return(
+    <div style={{background:freshToday?"#10294f":"#33260f",border:`1px solid ${col}`,borderRadius:8,padding:"11px 13px",marginBottom:tone==="inline"?10:16}}>
+      <div style={{fontSize:12,color:freshToday?C.soft:"#ffe099",lineHeight:1.6,marginBottom:8}}>
+        {freshToday
+          ? <>Backed up today — last restore point {last.savedAt}. There is still no undo, so check what you are deleting.</>
+          : last
+            ? <>Last restore point was {last.savedAt}. Nothing here can be undone — take a fresh backup first.</>
+            : <>No restore point has ever been saved. Nothing here can be undone — take a backup first.</>}
+      </div>
+      <button onClick={()=>{onBackup();setTick(t=>t+1);}}
+        style={{padding:"9px 15px",background:freshToday?"transparent":C.amber,border:`1px solid ${C.amber}`,borderRadius:6,
+          color:freshToday?C.amber:"#111",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+        💾 {freshToday?"Save another restore point":"Save a restore point now"}
+      </button>
+    </div>
+  );
+}
+
+function DeleteScreen({season,onDelete,onBackup,notify,onBack}){
+  const[cat,setCat]=useState("event");
+  const[confirm,setConfirm]=useState(null);
+  const nm=id=>season.players.find(p=>p.id===id)?.name??"?";
+
+  const CATS=[
+    {key:"event",label:"Sessions & festivals"},
+    {key:"match",label:"Matches"},
+    {key:"festival",label:"Whole festivals"},
+    {key:"injury",label:"Injuries"},
+    {key:"player",label:"Players"},
+  ];
+
+  const tours=[...(season.activeTournament?[season.activeTournament]:[]),...(season.tournaments||[])];
+  const matches=tours.flatMap(t=>(t.teams||[]).flatMap(tm=>(tm.matches||[]).map(m=>({t,tm,m}))));
+
+  const items=()=>{
+    if(cat==="event")return (season.events||[])
+      .slice().sort((a,b)=>String(b.date).localeCompare(String(a.date)))
+      .map(e=>({id:e.id,title:`${evType(e.type).icon} ${e.title||evType(e.type).label}`,
+        sub:`${e.date} · ${Object.keys(e.attendance||{}).length} in register, ${Object.keys(e.availability||{}).length} availability`,
+        impact:"Removes the event and its register. Training attendance percentages will change. Any festival it started is left alone.",
+        run:()=>onDelete.event(e.id)}));
+    if(cat==="match")return matches.map(({t,tm,m})=>{
+      const hv=matchHalves(m);
+      const n=Object.values(hv).filter(v=>v>0).length;
+      return{id:m.id,title:`Match ${m.num} v ${m.opposition||"TBC"}`,
+        sub:`${t.name} · ${tm.name} · ${m.status}`,
+        impact:n?`Takes back ${Object.values(hv).reduce((a,b)=>a+Math.max(0,b),0)} halves from ${n} player${n!==1?"s":""}. Remaining matches are renumbered.`
+                :"This match recorded no game time. Remaining matches are renumbered.",
+        run:()=>onDelete.match(m.id)};
+    });
+    if(cat==="festival")return tours.map(t=>{
+      const hv=tournamentHalvesMap(t);
+      const total=Object.values(hv).reduce((a,b)=>a+b,0);
+      const live=season.activeTournament?.id===t.id;
+      return{id:t.id,title:`🏉 ${t.name}${live?" (live)":""}`,
+        sub:`${t.date} · ${(t.teams||[]).length} team(s), ${(t.teams||[]).reduce((a,tm)=>a+(tm.matches||[]).length,0)} matches`,
+        impact:live?"Discards the live festival and its matches. Nothing has reached season totals yet, so no game time is lost."
+                   :`Removes the festival and takes ${total} halves back off season totals. The diary entry stays.`,
+        run:()=>onDelete.festival(t.id)};
+    });
+    if(cat==="injury")return (season.injuries||[]).map(i=>({id:i.id,
+      title:`${isHeadInjury(i.type)?"⚠ ":""}${nm(i.playerId)} — ${injuryLabel(i.type)}`,
+      sub:`${i.date}${i.contextLabel?" · "+i.contextLabel:""} · ${i.status}`,
+      impact:"Removes the record entirely. If this was the only thing keeping them out, they become available again.",
+      run:()=>onDelete.injury(i.id)}));
+    return season.players.map(p=>({id:p.id,title:p.name+(p.left?" · left":""),
+      sub:`${p.seasonHalves} halves · ${(season.injuries||[]).filter(i=>i.playerId===p.id).length} injuries · ${combosFor(season,p.id).length} links`,
+      impact:"Erases them completely — every register entry, availability answer, injury, link and selection. Their history cannot be recovered. For a child who has actually left, use Mark as left on their profile instead.",
+      run:()=>onDelete.player(p.id),danger:true}));
+  };
+
+  const list=items();
+
+  return(
+    <>
+      <Breadcrumb crumbs={[{label:"More",onClick:onBack},{label:"Delete"}]}/>
+      <h2 style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:900,color:C.red,margin:"0 0 3px"}}>Delete Something</h2>
+      <div style={{fontSize:12,color:C.muted,marginBottom:14}}>For clearing up mistakes. Every deletion shows what it will do first.</div>
+
+      <BackupPrompt onBackup={onBackup} notify={notify}/>
+
+      <div style={{display:"flex",gap:5,marginBottom:14,flexWrap:"wrap"}}>
+        {CATS.map(c=><Pill key={c.key} active={cat===c.key} onClick={()=>{setCat(c.key);setConfirm(null);}}>{c.label}</Pill>)}
+      </div>
+
+      <Card>
+        {list.length===0&&<p style={{fontSize:13,color:C.muted}}>Nothing here.</p>}
+        {list.map(it=>(
+          <div key={it.id} style={{borderBottom:`1px solid ${C.border}`,padding:"11px 0"}}>
+            {confirm===it.id?(
+              <div>
+                <div style={{fontSize:15,fontWeight:600,color:C.text,marginBottom:6}}>{it.title}</div>
+                <div style={{background:it.danger?"#3d1416":"#101b33",border:`1px solid ${it.danger?C.red:C.border}`,borderRadius:6,padding:"10px 12px",fontSize:12,color:it.danger?"#ff9999":C.soft,lineHeight:1.7,marginBottom:10}}>
+                  {it.impact}
+                </div>
+                <BackupPrompt onBackup={onBackup} notify={notify} tone="inline"/>
+                <div style={{display:"flex",gap:10}}>
+                  <Ghost onClick={()=>setConfirm(null)}>Cancel</Ghost>
+                  <PBtn style={{marginTop:0,flex:1}} color={C.red} onClick={()=>{it.run();setConfirm(null);notify("Deleted");}}>Delete permanently</PBtn>
+                </div>
+              </div>
+            ):(
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10}}>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:15,color:C.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{it.title}</div>
+                  <div style={{fontSize:11,color:C.muted,marginTop:2}}>{it.sub}</div>
+                </div>
+                <button onClick={()=>setConfirm(it.id)} style={{padding:"6px 12px",borderRadius:5,border:`1px solid ${C.red}`,background:"transparent",color:C.red,fontSize:12,cursor:"pointer",fontFamily:"inherit",flexShrink:0}}>Delete</button>
+              </div>
+            )}
+          </div>
+        ))}
+      </Card>
+
+      <p style={{fontSize:11,color:"#8296b2",lineHeight:1.7}}>
+        Other things are deleted where they live: a try on the match screen, a link or a snapshot on a player's
+        profile, a restore point under Saved restore points.
+      </p>
+    </>
   );
 }
 
@@ -1644,6 +2009,8 @@ function MoreMenu({onClose,go,season,lastSaved}){
       <Item icon="💾" label="Save a restore point now" sub="One tap — named with today's date and time" col={C.lime} onClick={()=>go("quicksave")}/>
       <Item icon="🗂" label="Saved restore points" sub={lastSaved?`Auto-saved ${lastSaved}`:"Manage and load saves"} onClick={()=>go("saves")}/>
       <Item icon="📊" label="Season stats" sub="Fairness, results, history" onClick={()=>go("stats")}/>
+      <Item icon="🗑" label="Delete something" sub="Clear up a mistake — player, festival, match, session" col={C.red} onClick={()=>go("delete")}/>
+      <Item icon="🚑" label="Injuries" sub="Who is out, and the return record" onClick={()=>go("injuries")}/>
       <Item icon="↗" label="Export a code" sub="Everything, squad, or a single event" onClick={()=>go("exportChooser")}/>
       <Item icon="↙" label="Import a season" sub="Replace everything from a full backup" onClick={()=>go("import")}/>
       <Item icon="👥" label="Import a squad" sub="Merge player records by name" onClick={()=>go("squadImport")}/>
@@ -2105,7 +2472,7 @@ function App(){
   const[showSaves,setShowSaves]=useState(false);
   const[lastSaved,setLastSaved]=useState(null);
   const[newT,setNewT]=useState({name:"",date:today(),location:"",pitchSize:"",numTeams:1,sourceEventId:null,teamNames:["Team 1","Team 2","Team 3","Team 4"]});
-  const[startupSaves,setStartupSaves]=useState([]);const[selPlayerId,setSelPlayerId]=useState(null);const[selEventId,setSelEventId]=useState(null);const[showAttImport,setShowAttImport]=useState(false);const[showMore,setShowMore]=useState(false);const[showExport,setShowExport]=useState(false);const[showSquadImport,setShowSquadImport]=useState(false);
+  const[startupSaves,setStartupSaves]=useState([]);const[selPlayerId,setSelPlayerId]=useState(null);const[selEventId,setSelEventId]=useState(null);const[showAttImport,setShowAttImport]=useState(false);const[showMore,setShowMore]=useState(false);const[showExport,setShowExport]=useState(false);const[showSquadImport,setShowSquadImport]=useState(false);const[injuryCtx,setInjuryCtx]=useState(null);
   const[showStartup,setShowStartup]=useState(false);
 
   useEffect(()=>{
@@ -2131,6 +2498,8 @@ function App(){
     if(k==="quicksave")quickSave();
     else if(k==="saves")setShowSaves(true);
     else if(k==="exportChooser")setShowExport(true);
+    else if(k==="injuries")setView("injuries");
+    else if(k==="delete")setView("delete");
     else if(k==="squadImport")setShowSquadImport(true);
     else if(k==="stats")setView("stats");
     else setModals(m=>({...m,[k]:true}));
@@ -2176,6 +2545,95 @@ function App(){
     return{updated,created};
   };
 
+  const addInjury=(inj)=>{
+    const id=uid();
+    setS(s=>{
+      const t=s.activeTournament;
+      let label="";
+      if(inj.context?.matchNum)label=`${t?.name||"Festival"} · match ${inj.context.matchNum}${inj.context.half?`, ${inj.context.half===1?"1st":"2nd"} half`:""}`;
+      else if(inj.context?.tournament)label=t?.name||"Festival";
+      else if(inj.context?.eventTitle)label=inj.context.eventTitle;
+      return{...s,
+        injuries:[{id,...inj,contextLabel:label,status:"active",returnDate:null,loggedAt:fmtNow()},...(s.injuries||[])],
+        players:inj.removeFromPlay?s.players.map(p=>p.id===inj.playerId?{...p,ill:true,available:false}:p):s.players,
+        activeTournament:(inj.removeFromPlay&&s.activeTournament)?{...s.activeTournament,
+          roster:(s.activeTournament.roster||[]).map(r=>r.playerId===inj.playerId?{...r,ill:true,attending:false}:r),
+          // Pull them off the pitch for anything not already locked. A completed
+          // half is history and is left exactly as it was.
+          teams:(s.activeTournament.teams||[]).map(tm=>({...tm,matches:(tm.matches||[]).map(m=>{
+            if(m.status==="done")return m;
+            const drop=h=>({on:(h?.on||[]).filter(x=>x!==inj.playerId),bench:(h?.bench||[]).filter(x=>x!==inj.playerId)});
+            const firstLocked=["halftime","second"].includes(m.status);
+            return{...m,
+              firstHalf:firstLocked?m.firstHalf:drop(m.firstHalf),
+              secondHalf:drop(m.secondHalf)};
+          })})),
+        }:s.activeTournament,
+      };
+    });
+    return id;
+  };
+  const resolveInjury=(id)=>setS(s=>{
+    const inj=(s.injuries||[]).find(i=>i.id===id);
+    const stillOut=(s.injuries||[]).some(i=>i.id!==id&&i.status==="active"&&i.playerId===inj?.playerId&&i.removeFromPlay);
+    return{...s,
+      injuries:(s.injuries||[]).map(i=>i.id===id?{...i,status:"returned",returnDate:today()}:i),
+      players:(inj&&!stillOut)?s.players.map(p=>p.id===inj.playerId?{...p,ill:false,available:true}:p):s.players};
+  });
+  const reopenInjury=(id)=>setS(s=>{
+    const inj=(s.injuries||[]).find(i=>i.id===id);
+    return{...s,
+      injuries:(s.injuries||[]).map(i=>i.id===id?{...i,status:"active",returnDate:null}:i),
+      players:(inj&&inj.removeFromPlay)?s.players.map(p=>p.id===inj.playerId?{...p,ill:true,available:false}:p):s.players};
+  });
+
+  const deleteMatch=(mid)=>{
+    const found=findMatch(season,mid);
+    if(!found)return;
+    const contrib=matchHalves(found.match);
+    const live=found.live;
+    setS(s=>{
+      const strip=(t)=>({...t,
+        teams:(t.teams||[]).map(tm=>tm.id===found.team.id
+          ?{...tm,matches:(tm.matches||[]).filter(m=>m.id!==mid).map((m,i)=>({...m,num:i+1}))}
+          :tm),
+        roster:(t.roster||[]).map(r=>contrib[r.playerId]
+          ?{...r,tournamentHalves:Math.max(0,(r.tournamentHalves||0)-contrib[r.playerId])}:r),
+      });
+      return{...s,
+        activeTournament:(live&&s.activeTournament)?strip(s.activeTournament):s.activeTournament,
+        tournaments:(s.tournaments||[]).map(t=>t.id===found.tournament.id?strip(t):t),
+        // a finished festival has already been added to season totals, so take it back out
+        players:live?s.players:s.players.map(p=>contrib[p.id]
+          ?{...p,seasonHalves:Math.max(0,p.seasonHalves-contrib[p.id])}:p),
+      };
+    });
+  };
+
+  const deleteFestival=(tid)=>{
+    const live=season.activeTournament?.id===tid;
+    const t=live?season.activeTournament:(season.tournaments||[]).find(x=>x.id===tid);
+    if(!t)return;
+    const contrib=tournamentHalvesMap(t);
+    setS(s=>({...s,
+      activeTournament:live?null:s.activeTournament,
+      tournaments:live?s.tournaments:(s.tournaments||[]).filter(x=>x.id!==tid),
+      // live festival halves were never added to season totals, so nothing to undo
+      players:live?s.players:s.players.map(p=>contrib[p.id]
+        ?{...p,seasonHalves:Math.max(0,p.seasonHalves-contrib[p.id])}:p),
+      events:(s.events||[]).map(e=>e.tournamentId===tid?{...e,tournamentId:null}:e),
+    }));
+  };
+
+  const deleteInjury=(iid)=>setS(s=>{
+    const inj=(s.injuries||[]).find(i=>i.id===iid);
+    const others=(s.injuries||[]).some(i=>i.id!==iid&&i.status==="active"&&i.removeFromPlay&&i.playerId===inj?.playerId);
+    return{...s,
+      injuries:(s.injuries||[]).filter(i=>i.id!==iid),
+      players:(inj&&inj.status==="active"&&inj.removeFromPlay&&!others)
+        ?s.players.map(p=>p.id===inj.playerId?{...p,ill:false,available:true}:p):s.players};
+  });
+
   const quickSave=()=>{
     if(!season){notify("Nothing to save yet","err");return;}
     const slots=lsGet(LS_SAVES)||[];
@@ -2201,10 +2659,21 @@ function App(){
   };
   const removePlayer=id=>setS(s=>{
     const strip=o=>{const c={...(o||{})};delete c[id];return c;};
+    const cleanTournament=(t)=>t?{...t,
+      roster:(t.roster||[]).filter(r=>r.playerId!==id),
+      playerSnapshot:(t.playerSnapshot||[]).filter(x=>x.id!==id),
+      teams:(t.teams||[]).map(tm=>({...tm,matches:(tm.matches||[]).map(m=>({...m,
+        firstHalf:{on:(m.firstHalf?.on||[]).filter(x=>x!==id),bench:(m.firstHalf?.bench||[]).filter(x=>x!==id)},
+        secondHalf:{on:(m.secondHalf?.on||[]).filter(x=>x!==id),bench:(m.secondHalf?.bench||[]).filter(x=>x!==id)},
+        score:m.score?{...m.score,tries:(m.score.tries||[]).filter(t2=>t2.playerId!==id)}:m.score,
+        changes:(m.changes||[]).filter(ch=>ch.offId!==id&&ch.onId!==id)}))})),
+    }:t;
     return{...s,
       players:s.players.filter(p=>p.id!==id),
       combos:(s.combos||[]).filter(c=>c.a!==id&&c.b!==id),
+      injuries:(s.injuries||[]).filter(i=>i.playerId!==id),
       events:(s.events||[]).map(e=>({...e,attendance:strip(e.attendance),availability:strip(e.availability)})),
+      tournaments:(s.tournaments||[]).map(cleanTournament),
       activeTournament:s.activeTournament?{...s.activeTournament,
         roster:(s.activeTournament.roster||[]).filter(r=>r.playerId!==id),
         teams:(s.activeTournament.teams||[]).map(t=>({...t,matches:(t.matches||[]).map(m=>({...m,
@@ -2292,8 +2761,13 @@ function App(){
     const fOn=boosted.slice(0,n).map(p=>p.id);
     const fBench=boosted.slice(n).map(p=>p.id);
     const spotsNeeded=Math.max(0,n-fBench.length);
-    const sOn=[...fBench,...fOn.slice(fOn.length-spotsNeeded)];
-    const sBench=fOn.slice(0,fOn.length-spotsNeeded);
+    // fOn is ordered most-deserving first (fewest halves played). Everyone who sat
+    // the first half comes on; the remaining places go to the FRONT of fOn, so the
+    // players who sit the second half are the ones who have already played most.
+    // Taking from the back would bench whoever has played least, and would do it
+    // to the same child every match.
+    const sOn=[...fBench,...fOn.slice(0,spotsNeeded)];
+    const sBench=fOn.slice(spotsNeeded);
     const patch={};
     if(half===1||half==="both")patch.firstHalf={on:fOn,bench:fBench};
     if(half===2||half==="both")patch.secondHalf={on:sOn,bench:sBench};
@@ -2351,7 +2825,7 @@ function App(){
         <div style={{maxWidth:980,margin:"0 auto",padding:"10px 16px",display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div style={{display:"flex",alignItems:"center",gap:10,cursor:view!=="setup"?"pointer":"default"}} onClick={()=>view!=="setup"&&setView("home")}>
             <span style={{fontSize:24}}>📋</span>
-            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>v6.1 · export codes</div></div>
+            <div><div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,color:C.lime,letterSpacing:1,lineHeight:1.1}}>{season?.name||"The Clipboard"}</div><div style={{fontSize:10,color:C.muted,letterSpacing:2,textTransform:"uppercase"}}>v6.5 · backup first</div></div>
           </div>
           {view!=="setup"&&!showStartup&&(
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -2376,10 +2850,14 @@ function App(){
         )}
         {view==="setup"&&!showStartup&&<SeasonSetupScreen onDone={handleSeasonStart} onLoadSaves={()=>setShowSaves(true)} onImportCode={(str)=>{const raw=dec(str.trim());if(!raw?.players||!raw?.name){notify("Invalid code","err");return;}const p=migrateSeason(raw);setSeason(p);save(p);setView("home");setLastSaved(fmtNow());notify("Session restored ✓");}}/>}
         {view==="home"&&season&&!showStartup&&<SeasonHome season={season} players={season.players} onOpenTournament={()=>setView("tournament")} onNewTournament={()=>openM("newTournament")} onStartFromEvent={startFromEvent} onSquad={()=>setView("squad")} onPlayers={()=>{setSelPlayerId(null);setView("players");}} onTimeline={()=>{setSelEventId(null);setView("timeline");}} onSeasonStats={()=>setView("stats")}/>}
-        {view==="tournament"&&season&&activeTournament&&<TournamentView tournament={activeTournament} season={season} seasonPlayers={season.players} patchTournament={patchTournament} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onBack={(dest)=>setView(dest==="home"?"home":"tournament")} onArchive={()=>openM("archiveConfirm")}/>}
+        {view==="tournament"&&season&&activeTournament&&<TournamentView tournament={activeTournament} season={season} seasonPlayers={season.players} patchTournament={patchTournament} patchMatch={patchMatch} createMatch={createMatch} completeHalf={completeHalf} recordChange={recordChange} autoPick={autoPick} notify={notify} updateRosterPlayer={updateRosterPlayer} onLogInjury={(ctx)=>setInjuryCtx({...ctx,tournament:true})} onBack={(dest)=>setView(dest==="home"?"home":"tournament")} onArchive={()=>openM("archiveConfirm")}/>}
         {view==="squadOld"&&season&&<SquadManager season={season} players={season.players} updatePlayer={updatePlayer} addPlayer={addPlayer} removePlayer={removePlayer} onBack={()=>setView("home")} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}}/>}
         {view==="stats"&&season&&<StatsView season={season} maxS={maxS} maxR={maxR} openM={openM} setView={setView}/>}
         {(view==="squad"||view==="players")&&season&&<SquadScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} addPlayer={addPlayer} updatePlayer={updatePlayer} notify={notify}/>}
+        {view==="delete"&&season&&<DeleteScreen season={season} notify={notify} onBack={()=>setView("diary")}
+          onBackup={quickSave} onDelete={{event:deleteEvent,match:deleteMatch,festival:deleteFestival,injury:deleteInjury,player:removePlayer}}/>}
+        {view==="injuries"&&season&&<InjuriesScreen season={season} resolveInjury={resolveInjury} reopenInjury={reopenInjury}
+          onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onLog={()=>setInjuryCtx({})}/>}
         {view==="analysis"&&season&&<AnalysisScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}}/>}
         {view==="assess"&&season&&<AssessScreen season={season} players={season.players} updatePlayer={updatePlayer} notify={notify} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onBack={()=>setView("squad")}/>}
         {view==="player"&&season&&(()=>{const pl=season.players.find(x=>x.id===selPlayerId);return pl?<PlayerProfile player={pl} players={season.players} season={season} updatePlayer={updatePlayer} setPlayerLeft={setPlayerLeft} addCombo={addCombo} removeCombo={removeCombo} notify={notify} onBack={()=>{setSelPlayerId(null);setView("squad");}} onOpenPlayer={id=>setSelPlayerId(id)}/>:<SquadScreen season={season} players={season.players} onOpenPlayer={id=>{setSelPlayerId(id);setView("player");}} onAssess={()=>setView("assess")} addPlayer={addPlayer} updatePlayer={updatePlayer} notify={notify}/>;})()}
@@ -2408,7 +2886,8 @@ function App(){
       )}
       {modals.resetConfirm&&(
         <ModalWrap title="Full Season Reset" onClose={()=>closeM("resetConfirm")}>
-          <p style={{fontSize:13,color:C.soft,marginBottom:16,lineHeight:1.6}}>Wipes all data. Core squad names kept. Cannot be undone.</p>
+          <BackupPrompt onBackup={quickSave} notify={notify}/>
+      <p style={{fontSize:13,color:C.soft,marginBottom:16,lineHeight:1.6}}>Wipes all data. Core squad names kept. Cannot be undone.</p>
           <div style={{display:"flex",gap:10}}><Ghost onClick={()=>closeM("resetConfirm")}>Cancel</Ghost><PBtn style={{marginTop:0,flex:1}} color={C.red} onClick={fullReset}>Reset Everything</PBtn></div>
         </ModalWrap>
       )}
@@ -2438,6 +2917,9 @@ function App(){
           setSelEventId(id);setView("event");
           notify(existingId?"Added to the existing event ✓":"Event created ✓");
         }} onClose={()=>setShowAttImport(false)}/>}
+      {injuryCtx&&season&&<InjuryModal season={season} players={season.players.filter(p=>!p.left)}
+        preselect={injuryCtx.playerId} context={injuryCtx} notify={notify}
+        onSave={addInjury} onClose={()=>setInjuryCtx(null)}/>}
       {showExport&&season&&<ExportChooser season={season} notify={notify} onClose={()=>setShowExport(false)}/>}
       {showSquadImport&&season&&<SquadImport season={season} notify={notify} onApply={importSquad} onClose={()=>setShowSquadImport(false)}/>}
       {showMore&&<MoreMenu onClose={()=>setShowMore(false)} go={goMore} season={season} lastSaved={lastSaved}/>}
